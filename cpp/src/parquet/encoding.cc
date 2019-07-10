@@ -622,6 +622,69 @@ void DictEncoderImpl<ByteArrayType>::PutDictionary(const arrow::Array& values) {
 }
 
 // ----------------------------------------------------------------------
+// FPByteStreamSplitEncoder<T> implementations
+
+template <typename DType>
+class FPByteStreamSplitEncoder : public EncoderImpl, virtual public TypedEncoder<DType> {
+ public:
+  using T = typename DType::c_type;
+
+  explicit FPByteStreamSplitEncoder(const ColumnDescriptor* descr,
+                        ::arrow::MemoryPool* pool = ::arrow::default_memory_pool());
+
+  int64_t EstimatedDataEncodedSize() override;
+  std::shared_ptr<Buffer> FlushValues() override;
+
+  void Put(const T* buffer, int num_values) override;
+
+ protected:
+  std::vector<T> values_;
+};
+
+template<typename DType>
+FPByteStreamSplitEncoder<DType>::FPByteStreamSplitEncoder(
+  const ColumnDescriptor* descr,
+  ::arrow::MemoryPool* pool)
+    : EncoderImpl(descr, Encoding::PLAIN, pool) {}
+
+template<typename DType>
+int64_t FPByteStreamSplitEncoder<DType>::EstimatedDataEncodedSize() {
+  return static_cast<int64_t>(values_.size() * sizeof(T));
+}
+
+template<typename DType>
+std::shared_ptr<Buffer> FPByteStreamSplitEncoder<DType>::FlushValues() {
+  constexpr size_t numStreams = sizeof(T);
+  using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
+  std::shared_ptr<ResizableBuffer> buffer =
+      AllocateBuffer(this->memory_pool(), EstimatedDataEncodedSize());
+  size_t streamOffsets[numStreams] = { 0U };
+  const size_t numBytesPerStream = values_.size();
+  for (size_t i = 0U; i < numStreams; ++i) {
+    streamOffsets[i] = i * numBytesPerStream;
+  }
+  uint8_t *mutableBuffer = buffer->mutable_data();
+  for (size_t i = 0; i < values_.size(); ++i) {
+    const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
+    for (size_t j = 0U; j < numStreams; ++j) {
+      const uint8_t byteInValue = static_cast<uint8_t>((value >> (8U*j)) & 0xFFU);
+      mutableBuffer[streamOffsets[j]] = byteInValue;
+      ++streamOffsets[j];
+    }
+  }
+  values_.clear();
+  return std::move(buffer);
+}
+
+template<typename DType>
+void FPByteStreamSplitEncoder<DType>::Put(const T* buffer, int num_values) {
+  values_.reserve(values_.size() + num_values);
+  for (int i = 0; i < num_values; ++i) {
+    values_.push_back(buffer[i]);
+  }
+}
+
+// ----------------------------------------------------------------------
 // Encoder and decoder factory functions
 
 std::unique_ptr<Encoder> MakeEncoder(Type::type type_num, Encoding::type encoding,
@@ -665,6 +728,16 @@ std::unique_ptr<Encoder> MakeEncoder(Type::type type_num, Encoding::type encodin
         return std::unique_ptr<Encoder>(new PlainEncoder<ByteArrayType>(descr, pool));
       case Type::FIXED_LEN_BYTE_ARRAY:
         return std::unique_ptr<Encoder>(new PlainEncoder<FLBAType>(descr, pool));
+      default:
+        DCHECK(false) << "Encoder not implemented";
+        break;
+    }
+  } else if (encoding == Encoding::BYTE_STREAM_SPLIT) {
+    switch (type_num) {
+      case Type::FLOAT:
+        return std::unique_ptr<Encoder>(new FPByteStreamSplitEncoder<FloatType>(descr, pool));
+      case Type::DOUBLE:
+        return std::unique_ptr<Encoder>(new FPByteStreamSplitEncoder<DoubleType>(descr, pool));
       default:
         DCHECK(false) << "Encoder not implemented";
         break;
@@ -1638,6 +1711,56 @@ class DeltaByteArrayDecoder : public DecoderImpl,
   ByteArray last_value_;
 };
 
+
+// ----------------------------------------------------------------------
+// BYTE_STREAM_SPLIT
+
+template <typename DType>
+class FPByteStreamSplitDecoder : public DecoderImpl, virtual public TypedDecoder<DType> {
+ public:
+  using T = typename DType::c_type;
+  explicit FPByteStreamSplitDecoder(const ColumnDescriptor* descr);
+
+  int Decode(T* buffer, int max_values) override;
+
+  void SetData(int num_values, const uint8_t* data, int len) override;
+
+ private:
+  int streamSizeInBytes_ { 0U };
+  int numValuesDecoded_ { 0U };
+};
+
+template<typename DType>
+FPByteStreamSplitDecoder<DType>::FPByteStreamSplitDecoder(const ColumnDescriptor* descr)
+    : DecoderImpl(descr, Encoding::BYTE_STREAM_SPLIT) {
+}
+
+template<typename DType>
+void FPByteStreamSplitDecoder<DType>::SetData(int num_values, const uint8_t* data, int len) {
+  DecoderImpl::SetData(num_values, data, len);
+  streamSizeInBytes_ = num_values;
+  numValuesDecoded_ = 0;
+}
+
+template<typename DType>
+int FPByteStreamSplitDecoder<DType>::Decode(T* buffer, int max_values) {
+  constexpr size_t numStreams = sizeof(T);
+  using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
+  const int valuesToDecode = std::min(num_values_ - numValuesDecoded_, max_values);
+  for (int i = 0; i < valuesToDecode; ++i) {
+    UnsignedType reconstructedValueAsUint { 0U };
+    for (size_t b = 0; b < numStreams; ++b) {
+      const size_t byteIndex = b * streamSizeInBytes_ + numValuesDecoded_ + i;
+      const UnsignedType byteValue = static_cast<UnsignedType>(data_[byteIndex]);
+      reconstructedValueAsUint |= (byteValue << (8U * b));
+    }
+    const T reconstructedValueAsFP = *reinterpret_cast<const T*>(&reconstructedValueAsUint);
+    buffer[i] = reconstructedValueAsFP;
+  }
+  numValuesDecoded_ += valuesToDecode;
+  return valuesToDecode;
+}
+
 // ----------------------------------------------------------------------
 
 std::unique_ptr<Decoder> MakeDecoder(Type::type type_num, Encoding::type encoding,
@@ -1660,6 +1783,15 @@ std::unique_ptr<Decoder> MakeDecoder(Type::type type_num, Encoding::type encodin
         return std::unique_ptr<Decoder>(new PlainByteArrayDecoder(descr));
       case Type::FIXED_LEN_BYTE_ARRAY:
         return std::unique_ptr<Decoder>(new PlainFLBADecoder(descr));
+      default:
+        break;
+    }
+  } else if (encoding == Encoding::BYTE_STREAM_SPLIT) {
+    switch (type_num) {
+      case Type::FLOAT:
+        return std::unique_ptr<Decoder>(new FPByteStreamSplitDecoder<FloatType>(descr));
+      case Type::DOUBLE:
+        return std::unique_ptr<Decoder>(new FPByteStreamSplitDecoder<DoubleType>(descr));
       default:
         break;
     }

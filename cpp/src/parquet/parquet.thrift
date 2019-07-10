@@ -459,6 +459,10 @@ enum Encoding {
   /** Dictionary encoding: the ids are encoded using the RLE encoding
    */
   RLE_DICTIONARY = 8;
+
+  /** Byte stream split
+   */
+  BYTE_STREAM_SPLIT = 9;
 }
 
 /**

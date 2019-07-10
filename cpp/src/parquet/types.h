@@ -452,6 +452,7 @@ struct Encoding {
     DELTA_LENGTH_BYTE_ARRAY = 6,
     DELTA_BYTE_ARRAY = 7,
     RLE_DICTIONARY = 8,
+    BYTE_STREAM_SPLIT = 9,
     UNKNOWN = 999
   };
 };
@@ -658,6 +659,23 @@ inline std::string format_fwf(int width) {
   ss << "%-" << width << type_traits<Type::type_num>::printf_code;
   return ss.str();
 }
+
+template<size_t Width>
+struct UnsignedTypeWithWidth;
+
+template<>
+struct UnsignedTypeWithWidth<sizeof(float)>
+{
+  using type = uint32_t;
+};
+
+template<>
+struct UnsignedTypeWithWidth<sizeof(double)>
+{
+  using type = uint64_t;
+};
+
+PARQUET_EXPORT std::string CompressionToString(Compression::type t);
 
 PARQUET_EXPORT std::string EncodingToString(Encoding::type t);
 
