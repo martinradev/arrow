@@ -580,7 +580,7 @@ TYPED_TEST(DictEncoding, CheckDecodeArrowNonNullDictBuilder) {
 namespace {
 template<typename DType>
 void TestEncodeDecodeWithBigInput() {
-  const int nvalues = 10000U;
+  const int nvalues = 11111;
   using T = typename DType::c_type;
   std::vector<T> data(nvalues);
   GenerateData<T>(nvalues, data.data(), NULLPTR);
@@ -591,17 +591,15 @@ void TestEncodeDecodeWithBigInput() {
   encoder->Put(data.data(), data.size());
 
   std::shared_ptr<Buffer> buffer = encoder->FlushValues();
-
   std::unique_ptr<TypedDecoder<DType> > decoder =
     MakeTypedDecoder<DType>(Encoding::BYTE_STREAM_SPLIT);
   decoder->SetData(data.size(), buffer->mutable_data(), buffer->size());
-
 
   std::vector<T> decodedData(nvalues);
   int numDecodedElements = decoder->Decode(decodedData.data(), nvalues);
   ASSERT_EQ(nvalues, numDecodedElements);
 
-  for (size_t i = 0U; i < decodedData.size(); ++i) {
+  for (int i = 0; i < numDecodedElements; ++i) {
     ASSERT_EQ(data[i], decodedData[i]);
   }
 }
@@ -612,9 +610,9 @@ TEST(ByteStreamSplitEncodeDecode, EncodeZeroLenInput) {
     std::unique_ptr<TypedEncoder<FloatType> > encoder =
       MakeTypedEncoder<FloatType>(Encoding::BYTE_STREAM_SPLIT);
     encoder->Put(NULL, 0);
-    ASSERT_EQ(0U, encoder->EstimatedDataEncodedSize());
+    ASSERT_EQ(4U, encoder->EstimatedDataEncodedSize());
     std::shared_ptr<Buffer> encoded_buffer = encoder->FlushValues();
-    ASSERT_EQ(0, encoded_buffer->size());
+    ASSERT_EQ(4U, encoded_buffer->size());
 }
 
 // Check that the encoder can handle input with one element.
@@ -626,11 +624,11 @@ TEST(ByteStreamSplitEncodeDecode, EncodeOneLenInput) {
   encoder->Put(&value, 1U);
 
   const int64_t estimatedNumBytes = encoder->EstimatedDataEncodedSize();
-  ASSERT_EQ(4U, estimatedNumBytes);
+  ASSERT_EQ(9U, estimatedNumBytes);
 
   std::shared_ptr<Buffer> encoded_buffer = encoder->FlushValues();
-  ASSERT_EQ(4U, encoded_buffer->size());
-  const uint8_t *mutableData = encoded_buffer->mutable_data();
+  ASSERT_EQ(9U, encoded_buffer->size());
+  const uint8_t *mutableData = encoded_buffer->mutable_data() + 5U;
 
   const uint32_t valueAsUint = *reinterpret_cast<const uint32_t*>(&value);
   ASSERT_EQ(static_cast<uint8_t>(valueAsUint & 0xFFU), mutableData[0]);
@@ -638,37 +636,10 @@ TEST(ByteStreamSplitEncodeDecode, EncodeOneLenInput) {
   ASSERT_EQ(static_cast<uint8_t>((valueAsUint >> 16U) & 0xFFU), mutableData[2]);
   ASSERT_EQ(static_cast<uint8_t>((valueAsUint >> 24U) & 0xFFU), mutableData[3]);
 
-  ASSERT_EQ(0, encoder->EstimatedDataEncodedSize());
+  ASSERT_EQ(4, encoder->EstimatedDataEncodedSize());
 
   encoded_buffer = encoder->FlushValues();
-  ASSERT_EQ(0, encoded_buffer->size());
-}
-
-// Check that the encoder can handle arbitrary large input.
-TEST(ByteStreamSplitEncodeDecode, EncodeLargeInput) {
-  const size_t nvalues = 10000U;
-  std::vector<float> draws(nvalues);
-  GenerateData<float>(nvalues, draws.data(), NULL);
-
-  std::unique_ptr<TypedEncoder<FloatType> > encoder =
-    MakeTypedEncoder<FloatType>(Encoding::BYTE_STREAM_SPLIT);
-  
-  encoder->Put(draws.data(), draws.size());
-
-  std::shared_ptr<Buffer> encodedBuffer = encoder->FlushValues();
-  ASSERT_EQ(draws.size() * sizeof(float), encodedBuffer->size());
-
-  size_t byteIndex = 0U;
-  const uint8_t *encodedBufferRaw = encodedBuffer->mutable_data();
-  for (size_t i = 0U; i < sizeof(float); ++i) {
-    for (size_t j = 0U; j < draws.size(); ++j) {
-      const float value = draws[j];
-      const uint32_t valueAsUint = *reinterpret_cast<const uint32_t*>(&value);
-      const uint8_t byte = static_cast<const uint8_t>((valueAsUint >> (8U * i)) & 0xFFU);
-      ASSERT_EQ(byte, encodedBufferRaw[byteIndex]);
-      ++byteIndex;
-    }
-  }
+  ASSERT_EQ(4, encoded_buffer->size());
 }
 
 // Check that the decoder can handle empty input.
@@ -682,8 +653,8 @@ TEST(ByteStreamSplitEncodeDecode, DecodeZeroLenInput) {
 TEST(ByteStreamSplitEncodeDecode, DecodeOneLenInput) {
   std::unique_ptr<TypedDecoder<FloatType> > decoder =
     MakeTypedDecoder<FloatType>(Encoding::BYTE_STREAM_SPLIT);
-  const uint8_t data[] = {0xDEU, 0xC0U, 0x37U, 0x13U};
-  decoder->SetData(1, data, 4);
+  const uint8_t data[] = {0x00U, 0x04U, 0x00U, 0x00U, 0x1U, 0xDEU, 0xC0U, 0x37U, 0x13U};
+  decoder->SetData(1, data, sizeof(data));
 
   float value = 0U;
   const int numDecoded = decoder->Decode(&value, 1);
@@ -699,10 +670,10 @@ TEST(ByteStreamSplitEncodeDecode, DecodeLargerPortion) {
   std::unique_ptr<TypedDecoder<DoubleType> > decoder =
     MakeTypedDecoder<DoubleType>(Encoding::BYTE_STREAM_SPLIT);
   const uint8_t data[] = {
-    0xDEU, 0xC0U, 0x37U, 0x13U, 0x11U, 0x22U, 0x33U, 0x44U,
+    0x00U, 0x04U, 0x00, 0x00, 0x1U, 0xDEU, 0xC0U, 0x37U, 0x13U, 0x11U, 0x22U, 0x33U, 0x44U,
     0xAAU, 0xBBU, 0xCCU, 0xDDU, 0x55U, 0x66U, 0x77U, 0x88U
   };
-  decoder->SetData(2, data, 8);
+  decoder->SetData(2, data, sizeof(data));
 
   double values[2] = {.0};
   const int numDecoded = decoder->Decode(values, 10000);
@@ -719,11 +690,17 @@ TEST(ByteStreamSplitEncodeDecode, DecodeLargerPortion) {
 TEST(ByteStreamSplitEncodeDecode, DecodeMultipleTimes) {
   std::unique_ptr<TypedDecoder<FloatType> > decoder =
     MakeTypedDecoder<FloatType>(Encoding::BYTE_STREAM_SPLIT);
-  
+
   const int numValues = 100;
-  std::vector<uint8_t> data(numValues * 4);
-  GenerateData<uint8_t>(numValues, data.data(), NULLPTR);
-  decoder->SetData(numValues, data.data(), numValues * 4);
+  std::vector<uint8_t> data(numValues * 4 + 5);
+  data[0] = 0x00U;
+  data[1] = 0x04U;
+  data[2] = 0x00U;
+  data[3] = 0x00U;
+  data[4] = 1U;
+  uint8_t *valuesData = data.data() + 5;
+  GenerateData<uint8_t>(numValues, valuesData, NULLPTR);
+  decoder->SetData(numValues, data.data(), data.size());
 
   const int step = 25;
   std::vector<float> decodedData(step);
@@ -731,10 +708,10 @@ TEST(ByteStreamSplitEncodeDecode, DecodeMultipleTimes) {
     int numDecoded = decoder->Decode(decodedData.data(), step);
     ASSERT_EQ(step, numDecoded);
     for (int j = 0; j < step; ++j) {
-      const uint32_t assembledValue = static_cast<uint32_t>(data[i + j]) |
-        (static_cast<uint32_t>(data[(i + j) + numValues]) << 8U) |
-        (static_cast<uint32_t>(data[(i + j) + numValues * 2]) << 16U) |
-        (static_cast<uint32_t>(data[(i + j) + numValues * 3]) << 24U);
+      const uint32_t assembledValue = static_cast<uint32_t>(valuesData[i + j]) |
+        (static_cast<uint32_t>(valuesData[(i + j) + numValues]) << 8U) |
+        (static_cast<uint32_t>(valuesData[(i + j) + numValues * 2]) << 16U) |
+        (static_cast<uint32_t>(valuesData[(i + j) + numValues * 3]) << 24U);
       const float assembledValueAsFloat = *reinterpret_cast<const float*>(&assembledValue);
       ASSERT_EQ(assembledValueAsFloat, decodedData[j]);
     }

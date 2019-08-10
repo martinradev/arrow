@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <cassert>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -491,6 +492,22 @@ class DictFLBAEncoder : public DictEncoderImpl<FLBAType>, virtual public FLBAEnc
 // ----------------------------------------------------------------------
 // FPByteStreamSplitEncoder<T> implementations
 
+namespace {
+
+  constexpr uint32_t ByteStreamSplitBlockSizeDefault = 1024U;
+  static_assert(sizeof(ByteStreamSplitBlockSizeDefault) == 4, "The standard requires that block size is 4 bytes.");
+
+  constexpr uint8_t ByteStreamSplitMetaData_Used = 1U;
+  constexpr uint8_t ByteStreamSplitMetaData_NotUsed = 0U;
+
+  size_t CalculateNumBytesForBlockTypeData(size_t numValues, size_t blockSize) {
+    const size_t numBitsForBlockTypes = (numValues + blockSize - 1U) / blockSize;
+    const size_t numBytesForBlockTypes = (numBitsForBlockTypes + 7U) / 8U;
+    return numBytesForBlockTypes;
+  }
+
+} // namespace
+
 template <typename DType>
 class FPByteStreamSplitEncoder : public EncoderImpl, virtual public TypedEncoder<DType> {
  public:
@@ -506,7 +523,72 @@ class FPByteStreamSplitEncoder : public EncoderImpl, virtual public TypedEncoder
 
  protected:
   std::vector<T> values_;
+
+ private:
+
+  bool isByteStreamSplitEncodingBeneficial(size_t offset, size_t count) const;
 };
+
+template<typename DType>
+bool FPByteStreamSplitEncoder<DType>::isByteStreamSplitEncodingBeneficial(size_t offset, size_t count) const
+{
+  // Approximate the number top 32 most occurring elements.
+  constexpr uint32_t bufferSize = 32U;
+  int32_t numOccurrences[bufferSize] = { -1 };
+  T id[bufferSize] = { 0U };
+  for (size_t i = offset; i < offset + count; ++i) {
+    const T value = values_[i];
+    uint32_t j = 0;
+    // Check up until the last element
+    while (j < bufferSize - 1U) {
+      if (id[j] == value && numOccurrences[j] != -1) {
+        break;
+      }
+      if (numOccurrences[j] == -1) {
+        numOccurrences[j] = 0;
+        break;
+      }
+      ++j;
+    }
+    int32_t cnt = numOccurrences[j];
+    while(j != 0U) {
+      int32_t prevCnt = numOccurrences[j-1U];
+      if (prevCnt < cnt) {
+        numOccurrences[j] = prevCnt;
+        id[j] = id[j-1U]; 
+      } else {
+        break;
+      }
+      --j;
+    }
+    id[j] = value;
+    numOccurrences[j] = cnt + 1;
+  }
+  // find first four most occurring elements.
+  int32_t indicesOfTopFour[4] = { bufferSize };
+  uint32_t totalSum = 0;
+  for (int i = 0; i < 4; ++i) {
+    uint32_t j = bufferSize; 
+    int32_t maxCount = -1;
+    uint32_t foundIndex = bufferSize;
+    while (j != 0U) {
+      --j;
+      if (numOccurrences[j] > maxCount &&
+          indicesOfTopFour[0] != j &&
+          indicesOfTopFour[1] != j &&
+          indicesOfTopFour[2] != j &&
+          indicesOfTopFour[3] != j) {
+        maxCount = numOccurrences[j];
+        foundIndex = j; 
+      }
+    }
+    if (foundIndex != bufferSize) {
+      indicesOfTopFour[i] = foundIndex;
+      totalSum += maxCount;
+    }
+  }
+  return (totalSum < (count / 4U));
+}
 
 template<typename DType>
 FPByteStreamSplitEncoder<DType>::FPByteStreamSplitEncoder(
@@ -516,28 +598,76 @@ FPByteStreamSplitEncoder<DType>::FPByteStreamSplitEncoder(
 
 template<typename DType>
 int64_t FPByteStreamSplitEncoder<DType>::EstimatedDataEncodedSize() {
-  return static_cast<int64_t>(values_.size() * sizeof(T));
+  const size_t numBytesForValueData = values_.size() * sizeof(T);
+  const size_t numBytesForBlockTypeData = CalculateNumBytesForBlockTypeData(values_.size(), ByteStreamSplitBlockSizeDefault);
+  return static_cast<int64_t>(numBytesForValueData + numBytesForBlockTypeData + sizeof(ByteStreamSplitBlockSizeDefault));
 }
 
 template<typename DType>
 std::shared_ptr<Buffer> FPByteStreamSplitEncoder<DType>::FlushValues() {
-  constexpr size_t numStreams = sizeof(T);
-  using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
   std::shared_ptr<ResizableBuffer> buffer =
       AllocateBuffer(this->memory_pool(), EstimatedDataEncodedSize());
-  size_t streamOffsets[numStreams] = { 0U };
-  const size_t numBytesPerStream = values_.size();
-  for (size_t i = 0U; i < numStreams; ++i) {
-    streamOffsets[i] = i * numBytesPerStream;
-  }
-  uint8_t *mutableBuffer = buffer->mutable_data();
-  for (size_t i = 0; i < values_.size(); ++i) {
-    const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
-    for (size_t j = 0U; j < numStreams; ++j) {
-      const uint8_t byteInValue = static_cast<uint8_t>((value >> (8U*j)) & 0xFFU);
-      mutableBuffer[streamOffsets[j]] = byteInValue;
-      ++streamOffsets[j];
+  uint8_t *blockTypeData = buffer->mutable_data();
+  memcpy(blockTypeData, &ByteStreamSplitBlockSizeDefault, sizeof(ByteStreamSplitBlockSizeDefault));
+  blockTypeData += sizeof(ByteStreamSplitBlockSizeDefault);
+
+  uint8_t packedBlockType = 0U;
+  uint8_t currentIndexInPackedBlockType = 0U;
+  size_t blockTypeDataIndex = 0U;
+  const size_t numValues = values_.size();
+
+  const size_t numBytesForBlockTypes = CalculateNumBytesForBlockTypeData(numValues, ByteStreamSplitBlockSizeDefault);
+  uint8_t *valuesData = blockTypeData + numBytesForBlockTypes;
+  blockTypeDataIndex = 0U;
+  currentIndexInPackedBlockType = 0U;
+  constexpr size_t numStreams = sizeof(T);
+  using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
+  for (size_t i = 0U; i < numValues; i += ByteStreamSplitBlockSizeDefault) {
+    size_t valuesInBlock = ByteStreamSplitBlockSizeDefault;
+    if (i + valuesInBlock > numValues) {
+      valuesInBlock = (numValues - i);
     }
+    const bool shouldBlockUseStreamSplit = this->isByteStreamSplitEncodingBeneficial(i, valuesInBlock);
+    uint8_t typeAsValue;
+    if (shouldBlockUseStreamSplit) {
+      typeAsValue = ByteStreamSplitMetaData_Used;
+    } else {
+      typeAsValue = ByteStreamSplitMetaData_NotUsed;
+    }
+    packedBlockType |= (typeAsValue << currentIndexInPackedBlockType);
+    ++currentIndexInPackedBlockType;
+    if (currentIndexInPackedBlockType == 8U) {
+      // All 8 bits of the bit-packed representation are exhausted.
+      // So, we have to write the byte to the stream.
+      blockTypeData[blockTypeDataIndex++] = packedBlockType;
+      currentIndexInPackedBlockType = 0U;
+      packedBlockType = 0U;
+    }
+
+    if (shouldBlockUseStreamSplit) {
+      // Apply byte stream splitting to the block.
+      for (size_t j = 0; j < valuesInBlock; ++j) {
+        const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i + j]);
+        for (size_t s = 0U; s < numStreams; ++s) {
+          const uint8_t byteInValue = static_cast<uint8_t>((value >> (8U*s)) & 0xFFU);
+          valuesData[valuesInBlock * s + j] = byteInValue;
+        }
+      }    
+    } else {
+      // Do a plain copy of the block.
+      const size_t numBytesToCopy = valuesInBlock * sizeof(T);
+      memcpy(valuesData, &values_[i], numBytesToCopy);
+    }
+    valuesData += valuesInBlock * sizeof(T);
+
+    if (blockTypeDataIndex == 8U && currentIndexInPackedBlockType < numBytesForBlockTypes) {
+      packedBlockType = blockTypeData[currentIndexInPackedBlockType++];
+      blockTypeDataIndex = 0U;
+    } 
+  }
+  if (currentIndexInPackedBlockType != 0U) {
+    // We have to handle any left over block types.
+    blockTypeData[blockTypeDataIndex++] = packedBlockType;
   }
   values_.clear();
   return std::move(buffer);
@@ -1271,8 +1401,14 @@ class FPByteStreamSplitDecoder : public DecoderImpl, virtual public TypedDecoder
   void SetData(int num_values, const uint8_t* data, int len) override;
 
  private:
-  int streamSizeInBytes_ { 0U };
-  int numValuesDecoded_ { 0U };
+  int streamSizeInBytes_ { 0 };
+  int numValuesDecoded_ { 0 };
+  uint32_t blockSize_ { 0U };
+  size_t currentBlockIndex_ { 0U };
+  size_t offsetInCurrentBlock_ { 0U };
+  size_t numBlocks_ { 0U };
+  const uint8_t *blockTypeData_ { NULLPTR };
+  const uint8_t *valuesData_ { NULLPTR };
 };
 
 template<typename DType>
@@ -1285,24 +1421,80 @@ void FPByteStreamSplitDecoder<DType>::SetData(int num_values, const uint8_t* dat
   DecoderImpl::SetData(num_values, data, len);
   streamSizeInBytes_ = num_values;
   numValuesDecoded_ = 0;
+  currentBlockIndex_ = 0;
+  offsetInCurrentBlock_ = 0;
+
+  if (len > 0) {
+    static_assert(sizeof(blockSize_) == 4U, "The format requires that block size is 4 bytes.");
+    memcpy(&blockSize_, data, sizeof(blockSize_));
+    numBlocks_ = (num_values + blockSize_ - 1U) / blockSize_;
+  } else {
+    blockSize_ = 0U;
+  }
+  if (num_values_ > 0) {
+    const size_t offsetToRawData = sizeof(blockSize_) + CalculateNumBytesForBlockTypeData(num_values_, this->blockSize_);
+    blockTypeData_ = data + sizeof(blockSize_);
+    valuesData_ = data + offsetToRawData;
+  } else {
+    blockTypeData_ = NULLPTR;
+    valuesData_ = NULLPTR;
+  }
 }
 
 template<typename DType>
 int FPByteStreamSplitDecoder<DType>::Decode(T* buffer, int max_values) {
-  constexpr size_t numStreams = sizeof(T);
-  using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
   const int valuesToDecode = std::min(num_values_ - numValuesDecoded_, max_values);
-  for (int i = 0; i < valuesToDecode; ++i) {
-    UnsignedType reconstructedValueAsUint { 0U };
-    for (size_t b = 0; b < numStreams; ++b) {
-      const size_t byteIndex = b * streamSizeInBytes_ + numValuesDecoded_ + i;
-      const UnsignedType byteValue = static_cast<UnsignedType>(data_[byteIndex]);
-      reconstructedValueAsUint |= (byteValue << (8U * b));
-    }
-    const T reconstructedValueAsFP = *reinterpret_cast<const T*>(&reconstructedValueAsUint);
-    buffer[i] = reconstructedValueAsFP;
+  if (valuesToDecode <= 0) {
+    return 0;
   }
-  numValuesDecoded_ += valuesToDecode;
+  if (this->blockSize_ == 0U) {
+    throw ParquetException("Block size is invalid.");
+  }
+
+  int valueIndex = 0;
+  uint8_t packedBlockType = blockTypeData_[currentBlockIndex_ / 8U];
+  uint8_t indexInPackedBlockType = currentBlockIndex_ % 8U;
+  while (valueIndex < valuesToDecode) {
+    const size_t numRemainingValues = valuesToDecode - valueIndex;
+    const size_t numValuesToDecodeFromBlock = std::min(numRemainingValues, this->blockSize_ - offsetInCurrentBlock_);
+    const size_t numValuesInBlock = (currentBlockIndex_ + 1U) < numBlocks_ ? blockSize_ : (num_values_ - currentBlockIndex_ * blockSize_);
+    if (((packedBlockType >> indexInPackedBlockType) & 0x1U) == ByteStreamSplitMetaData_Used) {
+      // The block is encoded using stream spliting.
+      constexpr size_t numStreams = sizeof(T);
+      using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
+      const uint8_t *blockStart = &valuesData_[currentBlockIndex_ * blockSize_ * sizeof(T)];
+      for (size_t i = 0; i < numValuesToDecodeFromBlock; ++i) {
+        UnsignedType reconstructedValueAsUint { 0U };
+        for (size_t b = 0; b < numStreams; ++b) {
+          const size_t byteIndex = b * numValuesInBlock + i + offsetInCurrentBlock_;
+          const UnsignedType byteValue = static_cast<UnsignedType>(blockStart[byteIndex]);
+          reconstructedValueAsUint |= (byteValue << (8U * b));
+        }
+        const T reconstructedValueAsFP = *reinterpret_cast<const T*>(&reconstructedValueAsUint);
+        buffer[i + valueIndex] = reconstructedValueAsFP;
+      }
+    } else {
+      // The block is in plain format.
+      memcpy(buffer + valueIndex, &valuesData_[numValuesDecoded_ * sizeof(T)], numValuesToDecodeFromBlock * sizeof(T));
+    }
+    if (numValuesToDecodeFromBlock + offsetInCurrentBlock_ == blockSize_) {
+      // The block was exhausted, so we have to go to the next block and set offset to 0.
+      currentBlockIndex_++;
+      offsetInCurrentBlock_ = 0;
+    } else {
+      offsetInCurrentBlock_ += numValuesToDecodeFromBlock;
+    }
+
+    indexInPackedBlockType++;
+    if (indexInPackedBlockType == 8U) {
+      // the packed block type was exhausted, so we have to move to the next one.
+      packedBlockType = blockTypeData_[currentBlockIndex_ / 8U];
+      indexInPackedBlockType = 0U;
+    }
+
+    valueIndex += numValuesToDecodeFromBlock;
+  }
+
   return valuesToDecode;
 }
 
