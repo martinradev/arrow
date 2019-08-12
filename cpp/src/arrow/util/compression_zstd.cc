@@ -31,6 +31,7 @@ using std::size_t;
 namespace arrow {
 namespace util {
 
+namespace {
 // XXX level = 1 probably doesn't compress very much
 constexpr int kZSTDDefaultCompressionLevel = 1;
 
@@ -94,12 +95,15 @@ class ZSTDDecompressor : public Decompressor {
 
 class ZSTDCompressor : public Compressor {
  public:
-  ZSTDCompressor() : stream_(ZSTD_createCStream()) {}
+  explicit ZSTDCompressor(int compressionLevel)
+    : stream_(ZSTD_createCStream()),
+      zstdCompressionLevel_(compressionLevel)
+  {}
 
   ~ZSTDCompressor() override { ZSTD_freeCStream(stream_); }
 
   Status Init() {
-    size_t ret = ZSTD_initCStream(stream_, kZSTDDefaultCompressionLevel);
+    size_t ret = ZSTD_initCStream(stream_, zstdCompressionLevel_);
     if (ZSTD_isError(ret)) {
       return ZSTDError(ret, "ZSTD init failed: ");
     } else {
@@ -118,6 +122,9 @@ class ZSTDCompressor : public Compressor {
 
  protected:
   ZSTD_CStream* stream_;
+
+ private:
+  int zstdCompressionLevel_;
 };
 
 Status ZSTDCompressor::Compress(int64_t input_len, const uint8_t* input,
@@ -178,12 +185,23 @@ Status ZSTDCompressor::End(int64_t output_len, uint8_t* output, int64_t* bytes_w
   *should_retry = ret > 0;
   return Status::OK();
 }
+} // namespace
 
 // ----------------------------------------------------------------------
 // ZSTD codec implementation
 
+ZSTDCodec::ZSTDCodec() : Codec(), zstdCompressionLevel_(kZSTDDefaultCompressionLevel) {
+  const char* envZstdCompressionLevel = getenv("ARROW_ZSTD_COMPRESSION_LEVEL");
+  if (envZstdCompressionLevel != NULLPTR) {
+    long int userSpecifiedLevel = strtol(envZstdCompressionLevel, NULLPTR, 10);
+    if (!(userSpecifiedLevel == 0L && errno == ERANGE)) {
+      zstdCompressionLevel_ = static_cast<int>(userSpecifiedLevel);
+    }
+  }
+}
+
 Status ZSTDCodec::MakeCompressor(std::shared_ptr<Compressor>* out) {
-  auto ptr = std::make_shared<ZSTDCompressor>();
+  auto ptr = std::make_shared<ZSTDCompressor>(zstdCompressionLevel_);
   RETURN_NOT_OK(ptr->Init());
   *out = ptr;
   return Status::OK();
@@ -237,7 +255,7 @@ Status ZSTDCodec::Compress(int64_t input_len, const uint8_t* input,
                            int64_t* output_len) {
   size_t ret =
       ZSTD_compress(output_buffer, static_cast<size_t>(output_buffer_len), input,
-                    static_cast<size_t>(input_len), kZSTDDefaultCompressionLevel);
+                    static_cast<size_t>(input_len), zstdCompressionLevel_);
   if (ZSTD_isError(ret)) {
     return ZSTDError(ret, "ZSTD compression failed: ");
   }
