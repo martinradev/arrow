@@ -27,6 +27,7 @@
 #include "parquet/exception.h"
 #include "parquet/platform.h"
 #include "parquet/schema.h"
+#include "parquet/types.h"
 
 using arrow::MemoryPool;
 
@@ -34,8 +35,25 @@ using parquet::schema::GroupNode;
 
 namespace parquet {
 
+namespace {
+
+void DetermineCompressionCodecAndLevel(const WriterProperties* properties,
+                                       const std::shared_ptr<schema::ColumnPath>& path,
+                                       Compression::type& outCompressionCodec,
+                                       int32_t& outCompressionLevel) {
+  const Compression::type compression = properties->compression(path);
+  const bool isCompressionLevelSelected = properties->is_compression_level_selected(path);
+  const int32_t compression_level =
+      isCompressionLevelSelected
+          ? properties->compression_level(path)
+          : GetCompressionCodecDefaultCompressionLevel(compression);
+  outCompressionCodec = compression;
+  outCompressionLevel = compression_level;
+}
+
 // FIXME: copied from reader-internal.cc
-static constexpr uint8_t PARQUET_MAGIC[4] = {'P', 'A', 'R', '1'};
+constexpr uint8_t PARQUET_MAGIC[4] = {'P', 'A', 'R', '1'};
+}  // namespace
 
 // ----------------------------------------------------------------------
 // RowGroupWriter public API
@@ -124,10 +142,12 @@ class RowGroupSerializer : public RowGroupWriter::Contents {
 
     ++next_column_index_;
 
-    const ColumnDescriptor* column_descr = col_meta->descr();
-    std::unique_ptr<PageWriter> pager =
-        PageWriter::Open(sink_, properties_->compression(column_descr->path()), col_meta,
-                         properties_->memory_pool());
+    Compression::type compressionCodec;
+    int32_t compression_level;
+    DetermineCompressionCodecAndLevel(properties_, col_meta->descr()->path(),
+                                      compressionCodec, compression_level);
+    std::unique_ptr<PageWriter> pager = PageWriter::Open(
+        sink_, compressionCodec, compression_level, col_meta, properties_->memory_pool());
     column_writers_[0] = ColumnWriter::Make(col_meta, std::move(pager), properties_);
     return column_writers_[0].get();
   }
@@ -221,10 +241,13 @@ class RowGroupSerializer : public RowGroupWriter::Contents {
   void InitColumns() {
     for (int i = 0; i < num_columns(); i++) {
       auto col_meta = metadata_->NextColumnChunk();
-      const ColumnDescriptor* column_descr = col_meta->descr();
+      Compression::type compressionCodec;
+      int32_t compression_level;
+      DetermineCompressionCodecAndLevel(properties_, col_meta->descr()->path(),
+                                        compressionCodec, compression_level);
       std::unique_ptr<PageWriter> pager =
-          PageWriter::Open(sink_, properties_->compression(column_descr->path()),
-                           col_meta, properties_->memory_pool(), buffered_row_group_);
+          PageWriter::Open(sink_, compressionCodec, compression_level, col_meta,
+                           properties_->memory_pool(), buffered_row_group_);
       column_writers_.push_back(
           ColumnWriter::Make(col_meta, std::move(pager), properties_));
     }

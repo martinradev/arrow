@@ -462,7 +462,8 @@ struct Compression {
 };
 
 PARQUET_EXPORT
-std::unique_ptr<::arrow::util::Codec> GetCodecFromArrow(Compression::type codec);
+std::unique_ptr<::arrow::util::Codec> GetCodecFromArrow(Compression::type codec,
+                                                        int32_t compression_level);
 
 struct Encryption {
   enum type { AES_GCM_V1 = 0, AES_GCM_CTR_V1 = 1 };
@@ -663,6 +664,8 @@ PARQUET_EXPORT std::string TypeToString(Type::type t);
 
 PARQUET_EXPORT std::string FormatStatValue(Type::type parquet_type,
                                            const std::string& val);
+
+PARQUET_EXPORT int32_t GetCompressionCodecDefaultCompressionLevel(Compression::type t);
 
 /// \deprecated Since 1.5.0
 ARROW_DEPRECATED("Use std::string instead of char* as input")

@@ -34,28 +34,35 @@ using arrow::util::Codec;
 
 namespace parquet {
 
-std::unique_ptr<Codec> GetCodecFromArrow(Compression::type codec) {
+std::unique_ptr<Codec> GetCodecFromArrow(Compression::type codec,
+                                         int32_t compression_level) {
   std::unique_ptr<Codec> result;
   switch (codec) {
     case Compression::UNCOMPRESSED:
       break;
     case Compression::SNAPPY:
-      PARQUET_THROW_NOT_OK(Codec::Create(::arrow::Compression::SNAPPY, &result));
+      PARQUET_THROW_NOT_OK(
+          Codec::Create(::arrow::Compression::SNAPPY, compression_level, &result));
       break;
     case Compression::GZIP:
-      PARQUET_THROW_NOT_OK(Codec::Create(::arrow::Compression::GZIP, &result));
+      PARQUET_THROW_NOT_OK(
+          Codec::Create(::arrow::Compression::GZIP, compression_level, &result));
       break;
     case Compression::LZO:
-      PARQUET_THROW_NOT_OK(Codec::Create(::arrow::Compression::LZO, &result));
+      PARQUET_THROW_NOT_OK(
+          Codec::Create(::arrow::Compression::LZO, compression_level, &result));
       break;
     case Compression::BROTLI:
-      PARQUET_THROW_NOT_OK(Codec::Create(::arrow::Compression::BROTLI, &result));
+      PARQUET_THROW_NOT_OK(
+          Codec::Create(::arrow::Compression::BROTLI, compression_level, &result));
       break;
     case Compression::LZ4:
-      PARQUET_THROW_NOT_OK(Codec::Create(::arrow::Compression::LZ4, &result));
+      PARQUET_THROW_NOT_OK(
+          Codec::Create(::arrow::Compression::LZ4, compression_level, &result));
       break;
     case Compression::ZSTD:
-      PARQUET_THROW_NOT_OK(Codec::Create(::arrow::Compression::ZSTD, &result));
+      PARQUET_THROW_NOT_OK(
+          Codec::Create(::arrow::Compression::ZSTD, compression_level, &result));
       break;
     default:
       break;
@@ -256,6 +263,34 @@ std::string ConvertedTypeToString(ConvertedType::type t) {
     case ConvertedType::UNDEFINED:
     default:
       return "UNKNOWN";
+  }
+}
+
+int32_t GetCompressionCodecDefaultCompressionLevel(Compression::type t) {
+  switch (t) {
+    case Compression::UNCOMPRESSED:
+      return arrow::util::GetCompressionCodecDefaultCompressionLevel(
+          arrow::Compression::UNCOMPRESSED);
+    case Compression::SNAPPY:
+      return arrow::util::GetCompressionCodecDefaultCompressionLevel(
+          arrow::Compression::SNAPPY);
+    case Compression::GZIP:
+      return arrow::util::GetCompressionCodecDefaultCompressionLevel(
+          arrow::Compression::GZIP);
+    case Compression::LZO:
+      return arrow::util::GetCompressionCodecDefaultCompressionLevel(
+          arrow::Compression::LZO);
+    case Compression::BROTLI:
+      return arrow::util::GetCompressionCodecDefaultCompressionLevel(
+          arrow::Compression::BROTLI);
+    case Compression::LZ4:
+      return arrow::util::GetCompressionCodecDefaultCompressionLevel(
+          arrow::Compression::LZ4);
+    case Compression::ZSTD:
+      return arrow::util::GetCompressionCodecDefaultCompressionLevel(
+          arrow::Compression::ZSTD);
+    default:
+      return -1;
   }
 }
 

@@ -53,12 +53,13 @@ std::vector<uint8_t> MakeCompressibleData(int data_size) {
 
 // Check roundtrip of one-shot compression and decompression functions.
 
-void CheckCodecRoundtrip(Compression::type ctype, const std::vector<uint8_t>& data) {
+void CheckCodecRoundtrip(Compression::type ctype, int32_t compression_level,
+                         const std::vector<uint8_t>& data) {
   // create multiple compressors to try to break them
   std::unique_ptr<Codec> c1, c2;
 
-  ASSERT_OK(Codec::Create(ctype, &c1));
-  ASSERT_OK(Codec::Create(ctype, &c2));
+  ASSERT_OK(Codec::Create(ctype, compression_level, &c1));
+  ASSERT_OK(Codec::Create(ctype, compression_level, &c2));
 
   int max_compressed_len =
       static_cast<int>(c1->MaxCompressedLen(data.size(), data.data()));
@@ -334,7 +335,10 @@ class CodecTest : public ::testing::TestWithParam<Compression::type> {
 
   std::unique_ptr<Codec> MakeCodec() {
     std::unique_ptr<Codec> codec;
-    ABORT_NOT_OK(Codec::Create(GetCompression(), &codec));
+    const auto compression = GetCompression();
+    const auto compression_level =
+        GetCompressionCodecDefaultCompressionLevel(compression);
+    ABORT_NOT_OK(Codec::Create(compression, compression_level, &codec));
     return codec;
   }
 };
@@ -348,11 +352,45 @@ TEST_P(CodecTest, CodecRoundtrip) {
   int sizes[] = {0, 10000, 100000};
   for (int data_size : sizes) {
     std::vector<uint8_t> data = MakeRandomData(data_size);
-    CheckCodecRoundtrip(GetCompression(), data);
+    const auto compression = GetCompression();
+    const auto compression_level =
+        GetCompressionCodecDefaultCompressionLevel(compression);
+    CheckCodecRoundtrip(compression, compression_level, data);
 
     data = MakeCompressibleData(data_size);
-    CheckCodecRoundtrip(GetCompression(), data);
+    CheckCodecRoundtrip(compression, compression_level, data);
   }
+}
+
+TEST_P(CodecTest, SpecifyCompressionLevel) {
+  const auto compression = GetCompression();
+  // The compression level is codec specific.
+  int32_t compression_level;
+  switch (compression) {
+    case Compression::LZ4:
+    case Compression::LZO:
+    case Compression::UNCOMPRESSED:
+    case Compression::SNAPPY:
+      // Compression level cannot be specified for these
+      // compression types.
+      return;
+    case Compression::GZIP:
+    case Compression::BZ2:
+      compression_level = 2;
+      break;
+    case Compression::ZSTD:
+      compression_level = 4;
+      break;
+    case Compression::BROTLI:
+      compression_level = 10;
+      break;
+    default:
+      FAIL() << "Unhandled compression type";
+      return;
+  }
+
+  std::vector<uint8_t> data = MakeRandomData(2000);
+  CheckCodecRoundtrip(compression, compression_level, data);
 }
 
 TEST_P(CodecTest, OutputBufferIsSmall) {
@@ -362,7 +400,8 @@ TEST_P(CodecTest, OutputBufferIsSmall) {
   }
 
   std::unique_ptr<Codec> codec;
-  ASSERT_OK(Codec::Create(type, &codec));
+  ASSERT_OK(
+      Codec::Create(type, GetCompressionCodecDefaultCompressionLevel(type), &codec));
 
   std::vector<uint8_t> data = MakeRandomData(10);
   auto max_compressed_len = codec->MaxCompressedLen(data.size(), data.data());

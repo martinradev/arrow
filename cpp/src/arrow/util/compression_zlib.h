@@ -38,7 +38,7 @@ class ARROW_EXPORT GZipCodec : public Codec {
     GZIP,
   };
 
-  explicit GZipCodec(Format format = GZIP);
+  explicit GZipCodec(int32_t compression_level, Format format = GZIP);
   ~GZipCodec() override;
 
   Status Decompress(int64_t input_len, const uint8_t* input, int64_t output_buffer_len,

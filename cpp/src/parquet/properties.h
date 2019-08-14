@@ -95,7 +95,9 @@ class PARQUET_EXPORT ColumnProperties {
         codec_(codec),
         dictionary_enabled_(dictionary_enabled),
         statistics_enabled_(statistics_enabled),
-        max_stats_size_(max_stats_size) {}
+        max_stats_size_(max_stats_size),
+        compression_level_(-1),
+        is_compression_level_selected_(false) {}
 
   void set_encoding(Encoding::type encoding) { encoding_ = encoding; }
 
@@ -113,6 +115,11 @@ class PARQUET_EXPORT ColumnProperties {
     max_stats_size_ = max_stats_size;
   }
 
+  void set_compression_level(int32_t compression_level) {
+    compression_level_ = compression_level;
+    is_compression_level_selected_ = true;
+  }
+
   Encoding::type encoding() const { return encoding_; }
 
   Compression::type compression() const { return codec_; }
@@ -123,12 +130,18 @@ class PARQUET_EXPORT ColumnProperties {
 
   size_t max_statistics_size() const { return max_stats_size_; }
 
+  int32_t compression_level() const { return compression_level_; }
+
+  bool is_compression_level_selected() const { return is_compression_level_selected_; }
+
  private:
   Encoding::type encoding_;
   Compression::type codec_;
   bool dictionary_enabled_;
   bool statistics_enabled_;
   size_t max_stats_size_;
+  int32_t compression_level_;
+  bool is_compression_level_selected_;
 };
 
 class PARQUET_EXPORT WriterProperties {
@@ -271,6 +284,21 @@ class PARQUET_EXPORT WriterProperties {
       return this->compression(path->ToDotString(), codec);
     }
 
+    Builder* compression_level(int32_t compression_level) {
+      default_column_properties_.set_compression_level(compression_level);
+      return this;
+    }
+
+    Builder* compression_level(const std::string& path, int32_t compression_level) {
+      codecs_compression_level_[path] = compression_level;
+      return this;
+    }
+
+    Builder* compression_level(const std::shared_ptr<schema::ColumnPath>& path,
+                               int compression_level) {
+      return this->compression_level(path->ToDotString(), compression_level);
+    }
+
     Builder* enable_statistics() {
       default_column_properties_.set_statistics_enabled(true);
       return this;
@@ -311,6 +339,8 @@ class PARQUET_EXPORT WriterProperties {
 
       for (const auto& item : encodings_) get(item.first).set_encoding(item.second);
       for (const auto& item : codecs_) get(item.first).set_compression(item.second);
+      for (const auto& item : codecs_compression_level_)
+        get(item.first).set_compression_level(item.second);
       for (const auto& item : dictionary_enabled_)
         get(item.first).set_dictionary_enabled(item.second);
       for (const auto& item : statistics_enabled_)
@@ -335,6 +365,7 @@ class PARQUET_EXPORT WriterProperties {
     ColumnProperties default_column_properties_;
     std::unordered_map<std::string, Encoding::type> encodings_;
     std::unordered_map<std::string, Compression::type> codecs_;
+    std::unordered_map<std::string, int32_t> codecs_compression_level_;
     std::unordered_map<std::string, bool> dictionary_enabled_;
     std::unordered_map<std::string, bool> statistics_enabled_;
   };
@@ -382,6 +413,15 @@ class PARQUET_EXPORT WriterProperties {
 
   Compression::type compression(const std::shared_ptr<schema::ColumnPath>& path) const {
     return column_properties(path).compression();
+  }
+
+  bool is_compression_level_selected(
+      const std::shared_ptr<schema::ColumnPath>& path) const {
+    return column_properties(path).is_compression_level_selected();
+  }
+
+  int32_t compression_level(const std::shared_ptr<schema::ColumnPath>& path) const {
+    return column_properties(path).compression_level();
   }
 
   bool dictionary_enabled(const std::shared_ptr<schema::ColumnPath>& path) const {

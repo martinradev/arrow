@@ -33,6 +33,28 @@ struct Compression {
 
 namespace util {
 
+inline int32_t GetCompressionCodecDefaultCompressionLevel(Compression::type t) {
+  switch (t) {
+    case Compression::UNCOMPRESSED:
+    case Compression::LZO:
+    case Compression::LZ4:
+    case Compression::SNAPPY:
+      return -1;
+    case Compression::GZIP:
+    case Compression::BZ2:
+      return 9;
+    case Compression::BROTLI:
+      // Brotli compression quality is max (11) by default, which is slow.
+      // We use 8 as a default as it is the best trade-off for Parquet workload.
+      return 8;
+    case Compression::ZSTD:
+      // 1 provides fast compression but not very good compression ratio.
+      return 1;
+    default:
+      return -1;
+  }
+}
+
 /// \brief Streaming compressor interface
 ///
 class ARROW_EXPORT Compressor {
@@ -97,7 +119,8 @@ class ARROW_EXPORT Codec {
  public:
   virtual ~Codec();
 
-  static Status Create(Compression::type codec, std::unique_ptr<Codec>* out);
+  static Status Create(Compression::type codec, int32_t compression_level,
+                       std::unique_ptr<Codec>* out);
 
   /// \brief One-shot decompression function
   ///

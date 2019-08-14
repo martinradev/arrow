@@ -120,7 +120,9 @@ class SerializedPageReader : public PageReader {
         seen_num_rows_(0),
         total_num_rows_(total_num_rows) {
     max_page_header_size_ = kDefaultMaxPageHeaderSize;
-    decompressor_ = GetCodecFromArrow(codec);
+    const int32_t defaultCompressionLevel =
+        GetCompressionCodecDefaultCompressionLevel(codec);
+    decompressor_ = GetCodecFromArrow(codec, defaultCompressionLevel);
   }
 
   // Implement the PageReader interface

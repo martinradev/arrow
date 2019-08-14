@@ -31,6 +31,7 @@ namespace util {
 // Brotli codec.
 class ARROW_EXPORT BrotliCodec : public Codec {
  public:
+  explicit BrotliCodec(int32_t compression_level);
   Status Decompress(int64_t input_len, const uint8_t* input, int64_t output_buffer_len,
                     uint8_t* output_buffer) override;
 
@@ -47,6 +48,9 @@ class ARROW_EXPORT BrotliCodec : public Codec {
   Status MakeDecompressor(std::shared_ptr<Decompressor>* out) override;
 
   const char* name() const override { return "brotli"; }
+
+ private:
+  int32_t compression_level_;
 };
 
 }  // namespace util

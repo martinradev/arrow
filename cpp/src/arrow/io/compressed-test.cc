@@ -152,7 +152,10 @@ class CompressedInputStreamTest : public ::testing::TestWithParam<Compression::t
 
   std::unique_ptr<Codec> MakeCodec() {
     std::unique_ptr<Codec> codec;
-    ABORT_NOT_OK(Codec::Create(GetCompression(), &codec));
+    const auto compression = GetCompression();
+    const auto compression_level =
+        util::GetCompressionCodecDefaultCompressionLevel(compression);
+    ABORT_NOT_OK(Codec::Create(compression, compression_level, &codec));
     return codec;
   }
 };
@@ -238,7 +241,10 @@ class CompressedOutputStreamTest : public ::testing::TestWithParam<Compression::
 
   std::unique_ptr<Codec> MakeCodec() {
     std::unique_ptr<Codec> codec;
-    ABORT_NOT_OK(Codec::Create(GetCompression(), &codec));
+    const auto compression = GetCompression();
+    const auto compression_level =
+        util::GetCompressionCodecDefaultCompressionLevel(compression);
+    ABORT_NOT_OK(Codec::Create(compression, compression_level, &codec));
     return codec;
   }
 };
