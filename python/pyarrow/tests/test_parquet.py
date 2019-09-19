@@ -631,6 +631,13 @@ def make_sample_file(table_or_df):
     buf.seek(0)
     return pq.ParquetFile(buf)
 
+def test_compression_level():
+    arr = pa.array(list(map(int, range(1000))))
+    data = [arr, arr]
+    table = pa.Table.from_arrays(data, names=['a', 'b'])
+    _check_roundtrip(table, expected=table, compression="gzip", compression_level=1)
+    _check_roundtrip(table, expected=table, compression="gzip", compression_level=5)
+    _check_roundtrip(table, expected=table, compression="gzip", compression_level=[{'a': 2, 'b': 3}])
 
 @pytest.mark.pandas
 def test_parquet_metadata_api():

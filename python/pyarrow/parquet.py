@@ -397,7 +397,9 @@ schema : arrow Schema
                  use_dictionary=True,
                  compression='snappy',
                  write_statistics=True,
-                 use_deprecated_int96_timestamps=None, **options):
+                 use_deprecated_int96_timestamps=None,
+                 compression_level=np.iinfo(np.intc).min,
+                 **options):
         if use_deprecated_int96_timestamps is None:
             # Use int96 timestamps for Spark
             if flavor is not None and 'spark' in flavor:
@@ -431,6 +433,7 @@ schema : arrow Schema
             use_dictionary=use_dictionary,
             write_statistics=write_statistics,
             use_deprecated_int96_timestamps=use_deprecated_int96_timestamps,
+            compression_level=compression_level,
             **options)
         self.is_open = True
 
@@ -1287,7 +1290,9 @@ def write_table(table, where, row_group_size=None, version='1.0',
                 coerce_timestamps=None,
                 allow_truncated_timestamps=False,
                 data_page_size=None, flavor=None,
-                filesystem=None, **kwargs):
+                filesystem=None,
+                compression_level=np.iinfo(np.intc).min,
+                **kwargs):
     row_group_size = kwargs.pop('chunk_size', row_group_size)
     use_int96 = use_deprecated_int96_timestamps
     try:
@@ -1303,6 +1308,7 @@ def write_table(table, where, row_group_size=None, version='1.0',
                 allow_truncated_timestamps=allow_truncated_timestamps,
                 compression=compression,
                 use_deprecated_int96_timestamps=use_int96,
+                compression_level=compression_level,
                 **kwargs) as writer:
             writer.write_table(table, row_group_size=row_group_size)
     except Exception:
