@@ -673,7 +673,8 @@ std::shared_ptr<Buffer> FPByteStreamSplitEncoder<DType>::FlushValues() {
       AllocateBuffer(this->memory_pool(), EstimatedDataEncodedSize());
   uint8_t *mutableBuffer = buffer->mutable_data();
   arrow::util::RleEncoder encoder(mutableBuffer, buffer->size(), bit_width());
-  for (size_t j = 0U; j < numStreams; ++j) {
+  const size_t numRLEStreams = 2U;
+  for (size_t j = numStreams - numRLEStreams; j < numStreams; ++j) {
     for (size_t i = 0; i < values_.size(); ++i) {
       const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
       const uint8_t byteInValue = static_cast<uint8_t>((value >> (8U*j)) & 0xFFU);
@@ -681,7 +682,16 @@ std::shared_ptr<Buffer> FPByteStreamSplitEncoder<DType>::FlushValues() {
     }
   }
   encoder.Flush();
-  buffer->Resize(encoder.len(), false);
+  const size_t rleDataSize = encoder.len();
+  size_t streamOffset = rleDataSize;
+  for (size_t j = 0; j < numStreams-numRLEStreams; ++j) {
+    for (size_t i = 0; i < values_.size(); ++i) {
+      const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
+      const uint8_t byteInValue = static_cast<uint8_t>((value >> (8U*j)) & 0xFFU);
+      mutableBuffer[streamOffset++] = byteInValue;
+    }
+  }
+  buffer->Resize(streamOffset, false);
   values_.clear();
   return std::move(buffer);
 }
