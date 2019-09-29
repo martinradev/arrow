@@ -636,7 +636,12 @@ class FPByteStreamSplitEncoder : public EncoderImpl, virtual public TypedEncoder
   std::shared_ptr<Buffer> FlushValues() override;
 
   void Put(const T* buffer, int num_values) override;
+  void Put(const ::arrow::Array& values) override;
 
+  void PutSpaced(const T* src, int num_values, const uint8_t* valid_bits,
+                         int64_t valid_bits_offset) override;
+
+  int bit_width() const;
  protected:
   std::vector<T> values_;
 };
@@ -649,7 +654,15 @@ FPByteStreamSplitEncoder<DType>::FPByteStreamSplitEncoder(
 
 template<typename DType>
 int64_t FPByteStreamSplitEncoder<DType>::EstimatedDataEncodedSize() {
-  return static_cast<int64_t>(values_.size() * sizeof(T));
+    return
+           arrow::util::RleEncoder::MaxBufferSize(
+               bit_width(), static_cast<int>(values_.size() * sizeof(T))) +
+           arrow::util::RleEncoder::MinBufferSize(bit_width());
+}
+
+template<typename DType>
+int FPByteStreamSplitEncoder<DType>::bit_width() const {
+    return 8;
 }
 
 template<typename DType>
@@ -658,22 +671,24 @@ std::shared_ptr<Buffer> FPByteStreamSplitEncoder<DType>::FlushValues() {
   using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
   std::shared_ptr<ResizableBuffer> buffer =
       AllocateBuffer(this->memory_pool(), EstimatedDataEncodedSize());
-  size_t streamOffsets[numStreams] = { 0U };
-  const size_t numBytesPerStream = values_.size();
-  for (size_t i = 0U; i < numStreams; ++i) {
-    streamOffsets[i] = i * numBytesPerStream;
-  }
   uint8_t *mutableBuffer = buffer->mutable_data();
-  for (size_t i = 0; i < values_.size(); ++i) {
-    const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
-    for (size_t j = 0U; j < numStreams; ++j) {
+  arrow::util::RleEncoder encoder(mutableBuffer, buffer->size(), bit_width());
+  for (size_t j = 0U; j < numStreams; ++j) {
+    for (size_t i = 0; i < values_.size(); ++i) {
+      const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
       const uint8_t byteInValue = static_cast<uint8_t>((value >> (8U*j)) & 0xFFU);
-      mutableBuffer[streamOffsets[j]] = byteInValue;
-      ++streamOffsets[j];
+      encoder.Put(byteInValue);
     }
   }
+  encoder.Flush();
+  buffer->Resize(encoder.len(), false);
   values_.clear();
   return std::move(buffer);
+}
+
+template<typename DType>
+void FPByteStreamSplitEncoder<DType>::Put(const ::arrow::Array& values) {
+    throw ParquetException("Not supported");
 }
 
 template<typename DType>
@@ -682,6 +697,13 @@ void FPByteStreamSplitEncoder<DType>::Put(const T* buffer, int num_values) {
   for (int i = 0; i < num_values; ++i) {
     values_.push_back(buffer[i]);
   }
+}
+
+template<typename DType>
+void FPByteStreamSplitEncoder<DType>::PutSpaced(const T* src, int num_values, const uint8_t* valid_bits,
+                        int64_t valid_bits_offset)
+{
+    throw ParquetException("Not supported");
 }
 
 // ----------------------------------------------------------------------
@@ -1728,6 +1750,7 @@ class FPByteStreamSplitDecoder : public DecoderImpl, virtual public TypedDecoder
  private:
   int streamSizeInBytes_ { 0U };
   int numValuesDecoded_ { 0U };
+  std::shared_ptr<ResizableBuffer> tmp_buffer;
 };
 
 template<typename DType>
@@ -1737,7 +1760,11 @@ FPByteStreamSplitDecoder<DType>::FPByteStreamSplitDecoder(const ColumnDescriptor
 
 template<typename DType>
 void FPByteStreamSplitDecoder<DType>::SetData(int num_values, const uint8_t* data, int len) {
-  DecoderImpl::SetData(num_values, data, len);
+  PARQUET_THROW_NOT_OK(arrow::AllocateResizableBuffer(arrow::default_memory_pool(),
+                                                        num_values * sizeof(T), &tmp_buffer));
+  arrow::util::RleDecoder rleDecoder = arrow::util::RleDecoder(data, len, 8);
+  const int numDecoded = rleDecoder.GetBatch(tmp_buffer->mutable_data(), num_values * sizeof(T));
+  DecoderImpl::SetData(num_values, tmp_buffer->mutable_data(), numDecoded);
   streamSizeInBytes_ = num_values;
   numValuesDecoded_ = 0;
 }
@@ -1747,11 +1774,12 @@ int FPByteStreamSplitDecoder<DType>::Decode(T* buffer, int max_values) {
   constexpr size_t numStreams = sizeof(T);
   using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
   const int valuesToDecode = std::min(num_values_ - numValuesDecoded_, max_values);
+  const uint8_t* tmp_buffer_data = tmp_buffer->mutable_data();
   for (int i = 0; i < valuesToDecode; ++i) {
     UnsignedType reconstructedValueAsUint { 0U };
     for (size_t b = 0; b < numStreams; ++b) {
       const size_t byteIndex = b * streamSizeInBytes_ + numValuesDecoded_ + i;
-      const UnsignedType byteValue = static_cast<UnsignedType>(data_[byteIndex]);
+      const UnsignedType byteValue = static_cast<UnsignedType>(tmp_buffer_data[byteIndex]);
       reconstructedValueAsUint |= (byteValue << (8U * b));
     }
     const T reconstructedValueAsFP = *reinterpret_cast<const T*>(&reconstructedValueAsUint);
