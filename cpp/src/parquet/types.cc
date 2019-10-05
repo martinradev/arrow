@@ -159,6 +159,14 @@ std::string EncodingToString(Encoding::type t) {
       return "RLE_DICTIONARY";
     case Encoding::BYTE_STREAM_SPLIT:
       return "BYTE_STREAM_SPLIT";
+    case Encoding::BYTE_STREAM_SPLIT_XOR:
+      return "BYTE_STREAM_SPLIT_XOR";
+    case Encoding::BYTE_STREAM_SPLIT_COMPONENT:
+      return "BYTE_STREAM_SPLIT_COMPONENT";
+    case Encoding::BYTE_STREAM_SPLIT_BYTE_RLE:
+      return "BYTE_STREAM_SPLIT_BYTE_RLE";
+    case Encoding::BYTE_STREAM_SPLIT_RYANBLUE_RLE:
+      return "BYTE_STREAM_SPLIT_RYANBLUE_RLE";
     default:
       return "UNKNOWN";
   }
