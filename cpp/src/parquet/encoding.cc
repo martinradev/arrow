@@ -630,59 +630,470 @@ class FPByteStreamSplitEncoder : public EncoderImpl, virtual public TypedEncoder
   using T = typename DType::c_type;
 
   explicit FPByteStreamSplitEncoder(const ColumnDescriptor* descr,
-                        ::arrow::MemoryPool* pool = ::arrow::default_memory_pool());
+                        ::arrow::MemoryPool* pool = ::arrow::default_memory_pool()) :
+    EncoderImpl(descr, Encoding::PLAIN, pool) {}
 
-  int64_t EstimatedDataEncodedSize() override;
-  std::shared_ptr<Buffer> FlushValues() override;
+  int64_t EstimatedDataEncodedSize() override {
+    return static_cast<int64_t>(values_.size() * sizeof(T));
+  }
+  std::shared_ptr<Buffer> FlushValues() override {
+    constexpr size_t numStreams = sizeof(T);
+    using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
+    std::shared_ptr<ResizableBuffer> buffer =
+        AllocateBuffer(this->memory_pool(), EstimatedDataEncodedSize());
+    size_t streamOffsets[numStreams] = { 0U };
+    const size_t numBytesPerStream = values_.size();
+    for (size_t i = 0U; i < numStreams; ++i) {
+        streamOffsets[i] = i * numBytesPerStream;
+    }
+    uint8_t *mutableBuffer = buffer->mutable_data();
+    for (size_t i = 0; i < values_.size(); ++i) {
+        const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
+        for (size_t j = 0U; j < numStreams; ++j) {
+        const uint8_t byteInValue = static_cast<uint8_t>((value >> (8U*j)) & 0xFFU);
+        mutableBuffer[streamOffsets[j]] = byteInValue;
+        ++streamOffsets[j];
+        }
+    }
+    values_.clear();
+    return std::move(buffer);
+  }
 
-  void Put(const T* buffer, int num_values) override;
+  void Put(const T* buffer, int num_values) override {
+    values_.reserve(values_.size() + num_values);
+    for (int i = 0; i < num_values; ++i) {
+        values_.push_back(buffer[i]);
+    }
+  }
+  void Put(const ::arrow::Array& values) override {
+      throw ParquetException("Not supported");
+  }
+
+  void PutSpaced(const T* src, int num_values, const uint8_t* valid_bits,
+                         int64_t valid_bits_offset) override {
+                             throw ParquetException("Not supported");
+                         }
+
+ protected:
+  std::vector<T> values_;
+};
+
+template <typename DType>
+class FPByteStreamSplitXOREncoder : public EncoderImpl, virtual public TypedEncoder<DType> {
+ public:
+  using T = typename DType::c_type;
+
+  explicit FPByteStreamSplitXOREncoder(const ColumnDescriptor* descr,
+                        ::arrow::MemoryPool* pool = ::arrow::default_memory_pool()) :
+    EncoderImpl(descr, Encoding::PLAIN, pool) {}
+
+  int64_t EstimatedDataEncodedSize() override {
+    return static_cast<int64_t>(values_.size() * sizeof(T));
+  }
+  std::shared_ptr<Buffer> FlushValues() override {
+    constexpr size_t numStreams = sizeof(T);
+    using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
+    std::shared_ptr<ResizableBuffer> buffer =
+        AllocateBuffer(this->memory_pool(), EstimatedDataEncodedSize());
+    size_t streamOffsets[numStreams] = { 0U };
+    const size_t numBytesPerStream = values_.size();
+    for (size_t i = 0U; i < numStreams; ++i) {
+        streamOffsets[i] = i * numBytesPerStream;
+    }
+    uint8_t *mutableBuffer = buffer->mutable_data();
+    UnsignedType prevValue = 0x0;
+    for (size_t i = 0; i < values_.size(); ++i) {
+        const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
+        const UnsignedType valueXor = value ^ prevValue;
+        for (size_t j = 0U; j < numStreams; ++j) {
+            const uint8_t byteInValue = static_cast<uint8_t>((valueXor >> (8U*j)) & 0xFFU);
+            mutableBuffer[streamOffsets[j]] = byteInValue;
+            ++streamOffsets[j];
+        }
+        prevValue = value;
+    }
+    values_.clear();
+    return std::move(buffer);
+  }
+
+  void Put(const T* buffer, int num_values) override {
+    values_.reserve(values_.size() + num_values);
+    for (int i = 0; i < num_values; ++i) {
+        values_.push_back(buffer[i]);
+    }
+  }
+  void Put(const ::arrow::Array& values) override {
+      throw ParquetException("Not supported");
+  }
+
+  void PutSpaced(const T* src, int num_values, const uint8_t* valid_bits,
+                         int64_t valid_bits_offset) override {
+                             throw ParquetException("Not supported");
+                         }
 
  protected:
   std::vector<T> values_;
 };
 
 template<typename DType>
-FPByteStreamSplitEncoder<DType>::FPByteStreamSplitEncoder(
+class FPByteStreamSplitComponentEncoder;
+
+template <>
+class FPByteStreamSplitComponentEncoder<FloatType> : public EncoderImpl, virtual public TypedEncoder<FloatType> {
+ public:
+  using DType = FloatType;
+  using T = typename DType::c_type;
+
+  explicit FPByteStreamSplitComponentEncoder(const ColumnDescriptor* descr,
+                        ::arrow::MemoryPool* pool = ::arrow::default_memory_pool()) :
+    EncoderImpl(descr, Encoding::PLAIN, pool) {}
+
+  int64_t EstimatedDataEncodedSize() override {
+    const int64_t numElements = values_.size();
+    const int64_t bytesToStoreSigns = CalculateNumBytesForBitStreams();
+    const int64_t bytesForRestOfData = numElements * 4; // 31 bits would require 4 streams.
+    return bytesToStoreSigns + bytesForRestOfData;
+  }
+  std::shared_ptr<Buffer> FlushValues() override {
+    using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
+    std::shared_ptr<ResizableBuffer> buffer =
+        AllocateBuffer(this->memory_pool(), EstimatedDataEncodedSize());
+    uint8_t *mutableBuffer = buffer->mutable_data();
+    const int64_t numBytesForBitStream = CalculateNumBytesForBitStreams();
+    BitUtil::BitWriter bitWriter(mutableBuffer, numBytesForBitStream);
+    const size_t numValues = values_.size();
+    for (size_t i = 0; i < numValues; ++i) {
+        const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
+        const uint8_t sign = (value>>31) & 0x1U;
+        const bool res = bitWriter.PutValue(sign, 1);
+        if (!res) {
+            throw ParquetException("Not enough space in writer");
+        }
+        const uint8_t otherComponents[] = {(uint8_t)((value>>23) & 0xFFU),
+        (uint8_t)((value >> 15) & 0xFFU),
+        (uint8_t)((value >> 7) & 0xFFU),
+        (uint8_t)(value & ((1<<7) - 1))};
+        for (size_t j = 0; j < sizeof(otherComponents); ++j) {
+            mutableBuffer[numBytesForBitStream + j * numValues + i] = otherComponents[j];
+        }
+    }
+    values_.clear();
+    return std::move(buffer);
+  }
+
+  void Put(const T* buffer, int num_values) override {
+    values_.reserve(values_.size() + num_values);
+    for (int i = 0; i < num_values; ++i) {
+        values_.push_back(buffer[i]);
+    }
+  }
+  void Put(const ::arrow::Array& values) override {
+      throw ParquetException("Not supported");
+  }
+
+  void PutSpaced(const T* src, int num_values, const uint8_t* valid_bits,
+                         int64_t valid_bits_offset) override {
+                             throw ParquetException("Not supported");
+                         }
+
+ protected:
+  std::vector<T> values_;
+
+ private:
+  int64_t CalculateNumBytesForBitStreams() const {
+      return ((values_.size() + 7ULL) / 8ULL);
+  }
+};
+
+template <>
+class FPByteStreamSplitComponentEncoder<DoubleType> : public EncoderImpl, virtual public TypedEncoder<DoubleType> {
+ public:
+  using DType = DoubleType;
+  using T = typename DType::c_type;
+
+  explicit FPByteStreamSplitComponentEncoder(const ColumnDescriptor* descr,
+                        ::arrow::MemoryPool* pool = ::arrow::default_memory_pool()) :
+    EncoderImpl(descr, Encoding::PLAIN, pool) {}
+
+  int64_t EstimatedDataEncodedSize() override {
+    const int64_t numElements = values_.size();
+    const int64_t bytesToStoreSigns = CalculateNumBytesForBitStreams();
+    const int64_t bytesForRestOfData = numElements * 9; // 2 streams for the exponent
+    return bytesToStoreSigns + bytesForRestOfData;
+  }
+  std::shared_ptr<Buffer> FlushValues() override {
+    using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
+    std::shared_ptr<ResizableBuffer> buffer =
+        AllocateBuffer(this->memory_pool(), EstimatedDataEncodedSize());
+    uint8_t *mutableBuffer = buffer->mutable_data();
+    const int64_t numBytesForBitStream = CalculateNumBytesForBitStreams();
+    BitUtil::BitWriter bitWriter(mutableBuffer, numBytesForBitStream);
+    const size_t numValues = values_.size();
+    for (size_t i = 0; i < numValues; ++i) {
+        const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
+        const uint8_t sign = (value>>63) & 0x1U;
+        const bool res = bitWriter.PutValue(sign, 1);
+        if (!res) {
+            throw ParquetException("Not enough space in writer");
+        }
+        const uint8_t otherComponents[] = {
+            (uint8_t)((value>>55) & 0xFFU), // top exponent
+            (uint8_t)((value >> 52) & 0x5), // last 3 bits of exponent
+            (uint8_t)((value >> 44) & 0xFFU), 
+            (uint8_t)((value >> 36) & 0xFFU), 
+            (uint8_t)((value >> 28) & 0xFFU), 
+            (uint8_t)((value >> 20) & 0xFFU), 
+            (uint8_t)((value >> 12) & 0xFFU), 
+            (uint8_t)((value >> 4) & 0xFFU), 
+            (uint8_t)((value) & 0x0FU) };
+        for (size_t j = 0; j < sizeof(otherComponents); ++j) {
+            mutableBuffer[numBytesForBitStream + j * numValues + i] = otherComponents[j];
+        }
+    }
+    values_.clear();
+    return std::move(buffer);
+  }
+
+  void Put(const T* buffer, int num_values) override {
+    values_.reserve(values_.size() + num_values);
+    for (int i = 0; i < num_values; ++i) {
+        values_.push_back(buffer[i]);
+    }
+  }
+  void Put(const ::arrow::Array& values) override {
+      throw ParquetException("Not supported");
+  }
+
+  void PutSpaced(const T* src, int num_values, const uint8_t* valid_bits,
+                         int64_t valid_bits_offset) override {
+                             throw ParquetException("Not supported");
+                         }
+
+ protected:
+  std::vector<T> values_;
+
+ private:
+  int64_t CalculateNumBytesForBitStreams() const {
+      return ((values_.size() + 7ULL) / 8ULL);
+  }
+};
+
+// ----------------------------------------------------------------------
+// FPByteStreamSplitEncoder<T> implementation
+
+template <typename DType>
+class FPByteStreamSplitEncoderRLEByte : public EncoderImpl, virtual public TypedEncoder<DType> {
+ public:
+  using T = typename DType::c_type;
+
+  explicit FPByteStreamSplitEncoderRLEByte(const ColumnDescriptor* descr,
+                        ::arrow::MemoryPool* pool = ::arrow::default_memory_pool());
+
+  int64_t EstimatedDataEncodedSize() override;
+  std::shared_ptr<Buffer> FlushValues() override;
+
+  void Put(const T* buffer, int num_values) override;
+  void Put(const ::arrow::Array& values) override;
+
+  void PutSpaced(const T* src, int num_values, const uint8_t* valid_bits,
+                         int64_t valid_bits_offset) override;
+
+  int bit_width() const;
+ protected:
+  std::vector<T> values_;
+};
+
+template<typename DType>
+FPByteStreamSplitEncoderRLEByte<DType>::FPByteStreamSplitEncoderRLEByte(
   const ColumnDescriptor* descr,
   ::arrow::MemoryPool* pool)
     : EncoderImpl(descr, Encoding::PLAIN, pool) {}
 
 template<typename DType>
-int64_t FPByteStreamSplitEncoder<DType>::EstimatedDataEncodedSize() {
-  return static_cast<int64_t>(values_.size() * sizeof(T));
+int64_t FPByteStreamSplitEncoderRLEByte<DType>::EstimatedDataEncodedSize() {
+    return
+           arrow::util::RleEncoder::MaxBufferSize(
+               bit_width(), static_cast<int>(values_.size() * sizeof(T))) +
+           arrow::util::RleEncoder::MinBufferSize(bit_width());
 }
 
 template<typename DType>
-std::shared_ptr<Buffer> FPByteStreamSplitEncoder<DType>::FlushValues() {
+int FPByteStreamSplitEncoderRLEByte<DType>::bit_width() const {
+    return 8;
+}
+
+template<typename DType>
+std::shared_ptr<Buffer> FPByteStreamSplitEncoderRLEByte<DType>::FlushValues() {
   constexpr size_t numStreams = sizeof(T);
   using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
   std::shared_ptr<ResizableBuffer> buffer =
       AllocateBuffer(this->memory_pool(), EstimatedDataEncodedSize());
-  size_t streamOffsets[numStreams] = { 0U };
-  const size_t numBytesPerStream = values_.size();
-  for (size_t i = 0U; i < numStreams; ++i) {
-    streamOffsets[i] = i * numBytesPerStream;
-  }
   uint8_t *mutableBuffer = buffer->mutable_data();
-  for (size_t i = 0; i < values_.size(); ++i) {
-    const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
-    for (size_t j = 0U; j < numStreams; ++j) {
+  arrow::util::RleEncoder encoder(mutableBuffer, buffer->size(), bit_width());
+  const size_t numRLEStreams = 2U;
+  for (size_t j = numStreams - numRLEStreams; j < numStreams; ++j) {
+    for (size_t i = 0; i < values_.size(); ++i) {
+      const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
       const uint8_t byteInValue = static_cast<uint8_t>((value >> (8U*j)) & 0xFFU);
-      mutableBuffer[streamOffsets[j]] = byteInValue;
-      ++streamOffsets[j];
+      encoder.Put(byteInValue);
     }
   }
+  encoder.Flush();
+  const size_t rleDataSize = encoder.len();
+  size_t streamOffset = rleDataSize;
+  for (size_t j = 0; j < numStreams-numRLEStreams; ++j) {
+    for (size_t i = 0; i < values_.size(); ++i) {
+      const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
+      const uint8_t byteInValue = static_cast<uint8_t>((value >> (8U*j)) & 0xFFU);
+      mutableBuffer[streamOffset++] = byteInValue;
+    }
+  }
+  buffer->Resize(streamOffset, false);
   values_.clear();
   return std::move(buffer);
 }
 
 template<typename DType>
-void FPByteStreamSplitEncoder<DType>::Put(const T* buffer, int num_values) {
+void FPByteStreamSplitEncoderRLEByte<DType>::Put(const ::arrow::Array& values) {
+    throw ParquetException("Not supported");
+}
+
+template<typename DType>
+void FPByteStreamSplitEncoderRLEByte<DType>::Put(const T* buffer, int num_values) {
   values_.reserve(values_.size() + num_values);
   for (int i = 0; i < num_values; ++i) {
     values_.push_back(buffer[i]);
   }
 }
+
+template<typename DType>
+void FPByteStreamSplitEncoderRLEByte<DType>::PutSpaced(const T* src, int num_values, const uint8_t* valid_bits,
+                        int64_t valid_bits_offset)
+{
+    throw ParquetException("Not supported");
+}
+
+// aaaaaa
+
+template<typename DType>
+class FPByteStreamSplitComponentRLEEncoder;
+
+template <typename DType = FloatType>
+class FPByteStreamSplitComponentRLEEncoder : public EncoderImpl, virtual public TypedEncoder<DType> {
+ public:
+  using T = typename DType::c_type;
+
+  explicit FPByteStreamSplitComponentRLEEncoder(const ColumnDescriptor* descr,
+                        ::arrow::MemoryPool* pool = ::arrow::default_memory_pool()) :
+    EncoderImpl(descr, Encoding::PLAIN, pool) {}
+
+  int64_t EstimatedDataEncodedSize() override {
+    return values_.size() * sizeof(T) * 8;
+  }
+  std::shared_ptr<Buffer> FlushValues() override {
+    constexpr size_t numStreams = sizeof(T);
+    constexpr size_t blockSize = 128;
+    using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
+    const size_t numValues = values_.size();
+    std::shared_ptr<ResizableBuffer> signBuffer =
+        AllocateBuffer(this->memory_pool(), numValues * 2);
+    std::shared_ptr<ResizableBuffer> exponentBuffer = AllocateBuffer(this->memory_pool(), numValues * 2);
+    std::shared_ptr<ResizableBuffer> mantissaStreams = AllocateBuffer(this->memory_pool(), numValues * 3); // 23 bits remaining
+    uint8_t* mantissaStreamsRaw = mantissaStreams->mutable_data();
+    std::shared_ptr<ResizableBuffer> exponentMinValue = AllocateBuffer(this->memory_pool(), (numValues + blockSize - 1) / blockSize);
+    uint8_t* exponentMinValueRaw = exponentMinValue->mutable_data();
+    std::shared_ptr<ResizableBuffer> exponentRangeValue = AllocateBuffer(this->memory_pool(), (numValues + blockSize - 1) / blockSize);
+    uint8_t* exponentRangeValueRaw = exponentRangeValue->mutable_data();
+    arrow::util::RleEncoder signEncoder(signBuffer->mutable_data(), signBuffer->size(), 1);
+    std::unique_ptr<arrow::util::RleEncoder> exponentEncoder;
+    uint8_t prevNumBitsForExponent = 0xff;
+    size_t exponentBufferOffset = 0;
+    for (size_t i = 0; i < numValues; i += blockSize) {
+        // go over block to find min and max
+        uint8_t maxValue = 0U;
+        uint8_t minValue = 0xFFU;
+        for (size_t j = 0; j < blockSize && i + j < numValues; ++j) {
+            const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i + j]);
+            const uint8_t exponentValue = (value >> 23) & 0xFFU;
+            if (maxValue < exponentValue) {
+                maxValue = exponentValue;
+            }
+            if (minValue > exponentValue) {
+                minValue = exponentValue;
+            }
+        }
+        const uint8_t range = maxValue - minValue;
+        const uint8_t numBitsForExponent = range == 0 ? 0 : BitUtil::Log2(range + 1);
+        if (prevNumBitsForExponent != numBitsForExponent) {
+            if (exponentEncoder) {
+                const int bytesWritten = exponentEncoder->Flush();
+                exponentBufferOffset += bytesWritten;
+            }
+            exponentEncoder.reset(new arrow::util::RleEncoder(exponentBuffer->mutable_data() + exponentBufferOffset,
+                                                              (int)(exponentBuffer->size() - exponentBufferOffset),
+                                                              (int)(numBitsForExponent)));
+            prevNumBitsForExponent = numBitsForExponent;
+        }
+        exponentMinValueRaw[i/blockSize] = minValue;
+        exponentRangeValueRaw[i/blockSize] = numBitsForExponent;
+        for (size_t j = 0; j < blockSize && i + j < numValues; ++j) {
+            const size_t index = i + j;
+            const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[index]);
+            const uint8_t sign = (value >> 31) & 0x1U;
+            const uint8_t exponent = ((value >> 23) & 0xFFU) - minValue;
+            const uint8_t mantissa0 = (value >> 15) & 0xFFU;
+            const uint8_t mantissa1 = (value >> 7) & 0xFFU;
+            const uint8_t mantissa2 = value & ((1<<7)-1);
+            exponentEncoder->Put(exponent);
+            signEncoder.Put(sign);
+            mantissaStreamsRaw[index] = mantissa0;
+            mantissaStreamsRaw[index + numValues] = mantissa1;
+            mantissaStreamsRaw[index + numValues*2] = mantissa2;
+        }
+    }
+    const int signBitsSize = signEncoder.Flush();
+    const int exponentSize = exponentBufferOffset + (exponentEncoder ? exponentEncoder->Flush() : 0);
+    const size_t totalSize = signBitsSize + exponentSize + mantissaStreams->size() + exponentMinValue->size() + exponentRangeValue->size();
+    std::shared_ptr<ResizableBuffer> fullBuffer = AllocateBuffer(this->memory_pool(), totalSize);
+    uint8_t* fullBufferData = fullBuffer->mutable_data();
+    size_t offset = 0;
+    memcpy(fullBufferData, signBuffer->mutable_data(), signBitsSize);
+    offset += signBitsSize;
+    memcpy(fullBufferData + offset, exponentBuffer->mutable_data(), exponentSize);
+    offset += exponentSize;
+    memcpy(fullBufferData + offset, mantissaStreams->mutable_data(), mantissaStreams->size());
+    offset += mantissaStreams->size();
+    memcpy(fullBufferData + offset, exponentMinValue->mutable_data(), exponentMinValue->size());
+    offset += exponentMinValue->size();
+    memcpy(fullBufferData + offset, exponentRangeValue->mutable_data(), exponentRangeValue->size());
+    offset += exponentRangeValue->size();
+    values_.clear();
+    return fullBuffer;
+  }
+
+  void Put(const T* buffer, int num_values) override {
+    values_.reserve(values_.size() + num_values);
+    for (int i = 0; i < num_values; ++i) {
+        values_.push_back(buffer[i]);
+    }
+  }
+  void Put(const ::arrow::Array& values) override {
+      throw ParquetException("Not supported");
+  }
+
+  void PutSpaced(const T* src, int num_values, const uint8_t* valid_bits,
+                         int64_t valid_bits_offset) override {
+                             throw ParquetException("Not supported");
+                         }
+
+ protected:
+  std::vector<T> values_;
+
+ private:
+  int64_t CalculateNumBytesForBitStreams() const {
+      return ((values_.size() + 7ULL) / 8ULL) ;
+  }
+};
 
 // ----------------------------------------------------------------------
 // Encoder and decoder factory functions
@@ -738,6 +1149,44 @@ std::unique_ptr<Encoder> MakeEncoder(Type::type type_num, Encoding::type encodin
         return std::unique_ptr<Encoder>(new FPByteStreamSplitEncoder<FloatType>(descr, pool));
       case Type::DOUBLE:
         return std::unique_ptr<Encoder>(new FPByteStreamSplitEncoder<DoubleType>(descr, pool));
+      default:
+        DCHECK(false) << "Encoder not implemented";
+        break;
+    }
+  } else if (encoding == Encoding::BYTE_STREAM_SPLIT_XOR) {
+    switch (type_num) {
+      case Type::FLOAT:
+        return std::unique_ptr<Encoder>(new FPByteStreamSplitXOREncoder<FloatType>(descr, pool));
+      case Type::DOUBLE:
+        return std::unique_ptr<Encoder>(new FPByteStreamSplitXOREncoder<DoubleType>(descr, pool));
+      default:
+        DCHECK(false) << "Encoder not implemented";
+        break;
+    }
+  } else if (encoding == Encoding::BYTE_STREAM_SPLIT_COMPONENT) {
+    switch (type_num) {
+      case Type::FLOAT:
+        return std::unique_ptr<Encoder>(new FPByteStreamSplitComponentEncoder<FloatType>(descr, pool));
+      case Type::DOUBLE:
+        return std::unique_ptr<Encoder>(new FPByteStreamSplitComponentEncoder<DoubleType>(descr, pool));
+      default:
+        DCHECK(false) << "Encoder not implemented";
+        break;
+    }
+   } else if (encoding == Encoding::BYTE_STREAM_SPLIT_BYTE_RLE) {
+    switch (type_num) {
+      case Type::FLOAT:
+        return std::unique_ptr<Encoder>(new FPByteStreamSplitEncoderRLEByte<FloatType>(descr, pool));
+      case Type::DOUBLE:
+        return std::unique_ptr<Encoder>(new FPByteStreamSplitEncoderRLEByte<DoubleType>(descr, pool));
+      default:
+        DCHECK(false) << "Encoder not implemented";
+        break;
+    }
+    } else if (encoding == Encoding::BYTE_STREAM_SPLIT_RYANBLUE_RLE) {
+    switch (type_num) {
+      case Type::FLOAT:
+        return std::unique_ptr<Encoder>(new FPByteStreamSplitComponentRLEEncoder<FloatType>(descr, pool));
       default:
         DCHECK(false) << "Encoder not implemented";
         break;
