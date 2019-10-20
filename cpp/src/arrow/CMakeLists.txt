@@ -179,6 +179,8 @@ if(ARROW_WITH_ZSTD)
   list(APPEND ARROW_SRCS util/compression_zstd.cc)
 endif()
 
+list(APPEND ARROW_SRCS util/compression_zfp.cc)
+
 set(ARROW_TESTING_SRCS
     io/test_common.cc
     ipc/test_common.cc

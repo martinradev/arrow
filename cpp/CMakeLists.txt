@@ -765,6 +765,8 @@ if(ARROW_JEMALLOC)
   list(APPEND ARROW_SYSTEM_LINK_LIBS jemalloc::jemalloc)
 endif()
 
+list(APPEND ARROW_SYSTEM_LINK_LIBS "libzfp.so") 
+
 if(ARROW_MIMALLOC)
   add_definitions(-DARROW_MIMALLOC)
   list(APPEND ARROW_SYSTEM_LINK_LIBS mimalloc::mimalloc)

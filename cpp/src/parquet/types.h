@@ -469,7 +469,7 @@ PARQUET_EXPORT
 std::unique_ptr<Codec> GetCodec(Compression::type codec);
 
 PARQUET_EXPORT
-std::unique_ptr<Codec> GetCodec(Compression::type codec, int compression_level);
+std::unique_ptr<Codec> GetCodec(Compression::type codec, int compression_level, uint8_t lossy_compression_precision, parquet::Type::type type);
 
 struct Encryption {
   enum type { AES_GCM_V1 = 0, AES_GCM_CTR_V1 = 1 };

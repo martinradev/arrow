@@ -137,7 +137,7 @@ class SerializedPageWriter : public PageWriter {
  public:
   SerializedPageWriter(const std::shared_ptr<ArrowOutputStream>& sink,
                        Compression::type codec, int compression_level,
-                       ColumnChunkMetaDataBuilder* metadata,
+                       uint8_t lossy_compression_precision, ColumnChunkMetaDataBuilder* metadata,
                        MemoryPool* pool = arrow::default_memory_pool())
       : sink_(sink),
         metadata_(metadata),
@@ -147,7 +147,7 @@ class SerializedPageWriter : public PageWriter {
         data_page_offset_(0),
         total_uncompressed_size_(0),
         total_compressed_size_(0) {
-    compressor_ = GetCodec(codec, compression_level);
+    compressor_ = GetCodec(codec, compression_level, lossy_compression_precision, metadata->descr()->physical_type());
     thrift_serializer_.reset(new ThriftSerializer);
   }
 
@@ -293,12 +293,12 @@ class BufferedPageWriter : public PageWriter {
  public:
   BufferedPageWriter(const std::shared_ptr<ArrowOutputStream>& sink,
                      Compression::type codec, int compression_level,
-                     ColumnChunkMetaDataBuilder* metadata,
+                     uint8_t lossy_compression_precision, ColumnChunkMetaDataBuilder* metadata,
                      MemoryPool* pool = arrow::default_memory_pool())
       : final_sink_(sink), metadata_(metadata) {
     in_memory_sink_ = CreateOutputStream(pool);
     pager_ = std::unique_ptr<SerializedPageWriter>(new SerializedPageWriter(
-        in_memory_sink_, codec, compression_level, metadata, pool));
+        in_memory_sink_, codec, compression_level, lossy_compression_precision, metadata, pool));
   }
 
   int64_t WriteDictionaryPage(const DictionaryPage& page) override {
@@ -342,14 +342,14 @@ class BufferedPageWriter : public PageWriter {
 
 std::unique_ptr<PageWriter> PageWriter::Open(
     const std::shared_ptr<ArrowOutputStream>& sink, Compression::type codec,
-    int compression_level, ColumnChunkMetaDataBuilder* metadata, MemoryPool* pool,
+    int compression_level, uint8_t lossy_compression_precision, ColumnChunkMetaDataBuilder* metadata, MemoryPool* pool,
     bool buffered_row_group) {
   if (buffered_row_group) {
     return std::unique_ptr<PageWriter>(
-        new BufferedPageWriter(sink, codec, compression_level, metadata, pool));
+        new BufferedPageWriter(sink, codec, compression_level, lossy_compression_precision, metadata, pool));
   } else {
     return std::unique_ptr<PageWriter>(
-        new SerializedPageWriter(sink, codec, compression_level, metadata, pool));
+        new SerializedPageWriter(sink, codec, compression_level, lossy_compression_precision, metadata, pool));
   }
 }
 

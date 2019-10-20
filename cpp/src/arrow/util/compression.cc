@@ -45,6 +45,8 @@
 #include "arrow/util/compression_bz2.h"
 #endif
 
+#include "arrow/util/compression_zfp.h"
+
 #include "arrow/status.h"
 
 namespace arrow {
@@ -78,16 +80,19 @@ std::string Codec::GetCodecAsString(Compression::type t) {
       return "ZSTD";
     case Compression::BZ2:
       return "BZ2";
+    case Compression::ZFP:
+      return "ZFP";
     default:
       return "UNKNOWN";
   }
 }
 
 Status Codec::Create(Compression::type codec_type, std::unique_ptr<Codec>* result) {
-  return Codec::Create(codec_type, Codec::UseDefaultCompressionLevel(), result);
+  return Codec::Create(codec_type, Codec::UseDefaultCompressionLevel(), 64, arrow::Type::type::NA, result);
 }
 
-Status Codec::Create(Compression::type codec_type, int compression_level,
+Status Codec::Create(Compression::type codec_type, int compression_level, uint8_t lossy_compression_precision,
+                     arrow::Type::type type,
                      std::unique_ptr<Codec>* result) {
   std::unique_ptr<Codec> codec;
   const bool compression_level_set{compression_level !=
@@ -151,6 +156,19 @@ Status Codec::Create(Compression::type codec_type, int compression_level,
 #else
       return Status::NotImplemented("BZ2 codec support not built");
 #endif
+    case Compression::ZFP:
+    {
+      zfp_type zfp_data_type;
+      if (type == arrow::Type::FLOAT) {
+          zfp_data_type = zfp_type_float;
+      } else if (type == arrow::Type::DOUBLE) {
+          zfp_data_type = zfp_type_double;
+      } else {
+          return Status::TypeError("ZFP does not support to passed type.");
+      }
+      codec.reset(new ZFPCodec(zfp_data_type, lossy_compression_precision));
+      break;
+    }
     default:
       return Status::Invalid("Unrecognized codec");
   }

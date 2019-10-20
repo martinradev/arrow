@@ -128,7 +128,7 @@ class RowGroupSerializer : public RowGroupWriter::Contents {
     const auto& path = col_meta->descr()->path();
     std::unique_ptr<PageWriter> pager = PageWriter::Open(
         sink_, properties_->compression(path), properties_->compression_level(path),
-        col_meta, properties_->memory_pool());
+        properties_->lossy_compression_precision(path), col_meta, properties_->memory_pool());
     column_writers_[0] = ColumnWriter::Make(col_meta, std::move(pager), properties_);
     return column_writers_[0].get();
   }
@@ -225,7 +225,7 @@ class RowGroupSerializer : public RowGroupWriter::Contents {
       const auto& path = col_meta->descr()->path();
       std::unique_ptr<PageWriter> pager = PageWriter::Open(
           sink_, properties_->compression(path), properties_->compression_level(path),
-          col_meta, properties_->memory_pool(), buffered_row_group_);
+          properties_->lossy_compression_precision(path), col_meta, properties_->memory_pool(), buffered_row_group_);
       column_writers_.push_back(
           ColumnWriter::Make(col_meta, std::move(pager), properties_));
     }

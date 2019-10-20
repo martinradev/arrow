@@ -97,7 +97,8 @@ class PARQUET_EXPORT ColumnProperties {
         dictionary_enabled_(dictionary_enabled),
         statistics_enabled_(statistics_enabled),
         max_stats_size_(max_stats_size),
-        compression_level_(Codec::UseDefaultCompressionLevel()) {}
+        compression_level_(Codec::UseDefaultCompressionLevel()),
+        lossy_compression_precision_(64) {}
 
   void set_encoding(Encoding::type encoding) { encoding_ = encoding; }
 
@@ -119,6 +120,10 @@ class PARQUET_EXPORT ColumnProperties {
     compression_level_ = compression_level;
   }
 
+  void set_lossy_compression_precision(uint8_t lossy_compression_precision) {
+    lossy_compression_precision_ = lossy_compression_precision;
+  }
+
   Encoding::type encoding() const { return encoding_; }
 
   Compression::type compression() const { return codec_; }
@@ -131,6 +136,8 @@ class PARQUET_EXPORT ColumnProperties {
 
   int compression_level() const { return compression_level_; }
 
+  uint8_t lossy_compression_precision() const { return lossy_compression_precision_; }
+
  private:
   Encoding::type encoding_;
   Compression::type codec_;
@@ -138,6 +145,7 @@ class PARQUET_EXPORT ColumnProperties {
   bool statistics_enabled_;
   size_t max_stats_size_;
   int compression_level_;
+  uint8_t lossy_compression_precision_;
 };
 
 class PARQUET_EXPORT WriterProperties {
@@ -313,6 +321,11 @@ class PARQUET_EXPORT WriterProperties {
       return this;
     }
 
+    Builder* lossy_compression_precision(const std::string& path, uint8_t precision) {
+        codecs_lossy_compression_precision_[path] = precision;
+        return this;
+    }
+
     /// \brief Specify a compression level for the compressor for the column
     /// described by path.
     ///
@@ -327,6 +340,11 @@ class PARQUET_EXPORT WriterProperties {
     Builder* compression_level(const std::shared_ptr<schema::ColumnPath>& path,
                                int compression_level) {
       return this->compression_level(path->ToDotString(), compression_level);
+    }
+
+    Builder* lossy_compression_precision(const std::shared_ptr<schema::ColumnPath>& path,
+                               uint8_t lossy_compression_precision) {
+      return this->lossy_compression_precision(path->ToDotString(), lossy_compression_precision);
     }
 
     Builder* enable_statistics() {
@@ -371,6 +389,8 @@ class PARQUET_EXPORT WriterProperties {
       for (const auto& item : codecs_) get(item.first).set_compression(item.second);
       for (const auto& item : codecs_compression_level_)
         get(item.first).set_compression_level(item.second);
+      for (const auto& item : codecs_lossy_compression_precision_)
+        get(item.first).set_lossy_compression_precision(item.second);
       for (const auto& item : dictionary_enabled_)
         get(item.first).set_dictionary_enabled(item.second);
       for (const auto& item : statistics_enabled_)
@@ -396,6 +416,7 @@ class PARQUET_EXPORT WriterProperties {
     std::unordered_map<std::string, Encoding::type> encodings_;
     std::unordered_map<std::string, Compression::type> codecs_;
     std::unordered_map<std::string, int32_t> codecs_compression_level_;
+    std::unordered_map<std::string, uint8_t> codecs_lossy_compression_precision_;
     std::unordered_map<std::string, bool> dictionary_enabled_;
     std::unordered_map<std::string, bool> statistics_enabled_;
   };
@@ -447,6 +468,10 @@ class PARQUET_EXPORT WriterProperties {
 
   int compression_level(const std::shared_ptr<schema::ColumnPath>& path) const {
     return column_properties(path).compression_level();
+  }
+
+  uint8_t lossy_compression_precision(const std::shared_ptr<schema::ColumnPath>& path) const {
+    return column_properties(path).lossy_compression_precision();
   }
 
   bool dictionary_enabled(const std::shared_ptr<schema::ColumnPath>& path) const {

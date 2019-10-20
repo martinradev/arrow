@@ -24,6 +24,7 @@
 #include "arrow/util/checked_cast.h"
 #include "arrow/util/compression.h"
 #include "arrow/util/logging.h"
+#include "arrow/type.h"
 
 #include "parquet/exception.h"
 #include "parquet/parquet_types.h"
@@ -42,6 +43,7 @@ bool IsCodecSupported(Compression::type codec) {
     case Compression::BROTLI:
     case Compression::ZSTD:
     case Compression::LZ4:
+    case Compression::ZFP:
       return true;
     default:
       return false;
@@ -49,10 +51,10 @@ bool IsCodecSupported(Compression::type codec) {
 }
 
 std::unique_ptr<Codec> GetCodec(Compression::type codec) {
-  return GetCodec(codec, Codec::UseDefaultCompressionLevel());
+  return GetCodec(codec, Codec::UseDefaultCompressionLevel(), 64, parquet::Type::UNDEFINED);
 }
 
-std::unique_ptr<Codec> GetCodec(Compression::type codec, int compression_level) {
+std::unique_ptr<Codec> GetCodec(Compression::type codec, int compression_level, uint8_t lossy_compression_precision, parquet::Type::type type) {
   std::unique_ptr<Codec> result;
   if (!IsCodecSupported(codec)) {
     std::stringstream ss;
@@ -61,7 +63,18 @@ std::unique_ptr<Codec> GetCodec(Compression::type codec, int compression_level) 
     throw ParquetException(ss.str());
   }
 
-  PARQUET_THROW_NOT_OK(Codec::Create(codec, compression_level, &result));
+  arrow::Type::type arrow_type = arrow::Type::NA;
+  switch (type) {
+      case parquet::Type::FLOAT:
+        arrow_type = arrow::Type::FLOAT;
+        break;
+      case parquet::Type::DOUBLE:
+        arrow_type = arrow::Type::DOUBLE;
+        break;
+      default:
+        break;
+  }
+  PARQUET_THROW_NOT_OK(Codec::Create(codec, compression_level, lossy_compression_precision, arrow_type, &result));
   return result;
 }
 

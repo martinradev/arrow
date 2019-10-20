@@ -111,6 +111,8 @@ static inline Compression::type FromThrift(format::CompressionCodec::type type) 
       return Compression::LZ4;
     case format::CompressionCodec::ZSTD:
       return Compression::ZSTD;
+    case format::CompressionCodec::ZFP:
+      return Compression::ZFP;
     default:
       DCHECK(false) << "Cannot reach here";
       return Compression::UNCOMPRESSED;
@@ -133,6 +135,8 @@ static inline format::CompressionCodec::type ToThrift(Compression::type type) {
       return format::CompressionCodec::LZ4;
     case Compression::ZSTD:
       return format::CompressionCodec::ZSTD;
+    case Compression::ZFP:
+      return format::CompressionCodec::ZFP;
     default:
       DCHECK(false) << "Cannot reach here";
       return format::CompressionCodec::UNCOMPRESSED;

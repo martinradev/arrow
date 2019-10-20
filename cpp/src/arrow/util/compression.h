@@ -23,6 +23,7 @@
 #include <string>
 
 #include "arrow/util/visibility.h"
+#include "arrow/type.h"
 
 namespace arrow {
 
@@ -30,7 +31,7 @@ class Status;
 
 struct Compression {
   /// \brief Compression algorithm
-  enum type { UNCOMPRESSED, SNAPPY, GZIP, BROTLI, ZSTD, LZ4, LZO, BZ2 };
+  enum type { UNCOMPRESSED, SNAPPY, GZIP, BROTLI, ZSTD, LZ4, LZO, BZ2, ZFP };
 };
 
 namespace util {
@@ -113,7 +114,8 @@ class ARROW_EXPORT Codec {
   static Status Create(Compression::type codec, std::unique_ptr<Codec>* out);
 
   /// \brief Create a codec for the given compression algorithm and level
-  static Status Create(Compression::type codec, int compression_level,
+  static Status Create(Compression::type codec, int compression_level, uint8_t lossy_compression_precision,
+                       arrow::Type::type type,
                        std::unique_ptr<Codec>* out);
 
   /// \brief Return true if support for indicated codec has been enabled

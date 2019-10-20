@@ -109,7 +109,7 @@ class TestPrimitiveWriter : public PrimitiveTypedTest<TestType> {
     metadata_ = ColumnChunkMetaDataBuilder::Make(writer_properties_, this->descr_);
     std::unique_ptr<PageWriter> pager =
         PageWriter::Open(sink_, column_properties.compression(),
-                         Codec::UseDefaultCompressionLevel(), metadata_.get());
+                         Codec::UseDefaultCompressionLevel(), 64, metadata_.get());
     std::shared_ptr<ColumnWriter> writer =
         ColumnWriter::Make(metadata_.get(), std::move(pager), writer_properties_.get());
     return std::static_pointer_cast<TypedColumnWriter<TestType>>(writer);
@@ -697,7 +697,7 @@ TEST(TestColumnWriter, RepeatedListsUpdateSpacedBug) {
   auto metadata = ColumnChunkMetaDataBuilder::Make(props, schema.Column(0));
   std::unique_ptr<PageWriter> pager =
       PageWriter::Open(sink, Compression::UNCOMPRESSED,
-                       Codec::UseDefaultCompressionLevel(), metadata.get());
+                       Codec::UseDefaultCompressionLevel(), 64, metadata.get());
   std::shared_ptr<ColumnWriter> writer =
       ColumnWriter::Make(metadata.get(), std::move(pager), props.get());
   auto typed_writer = std::static_pointer_cast<TypedColumnWriter<Int32Type>>(writer);
