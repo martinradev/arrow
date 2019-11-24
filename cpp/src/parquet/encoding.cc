@@ -636,20 +636,76 @@ class FPByteStreamSplitEncoder : public EncoderImpl, virtual public TypedEncoder
   int64_t EstimatedDataEncodedSize() override {
     return static_cast<int64_t>(values_.size() * sizeof(T));
   }
+
   std::shared_ptr<Buffer> FlushValues() override {
     constexpr size_t numStreams = sizeof(T);
     using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
     std::shared_ptr<ResizableBuffer> buffer =
         AllocateBuffer(this->memory_pool(), EstimatedDataEncodedSize());
     const size_t numBytesPerStream = values_.size();
-    uint8_t *mutableBuffer = buffer->mutable_data();
-    for (size_t i = 0; i < values_.size(); ++i) {
+    __m128i *mutableBuffer = (__m128i*)buffer->mutable_data();
+    size_t size = values_.size();
+
+    const __m128i shuffle1 = _mm_set_epi8(0, 4, 8, 12, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80);
+    const __m128i shuffle2 = _mm_set_epi8(0x80, 0x80, 0x80, 0x80, 1, 5, 9, 13, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80);
+    const __m128i shuffle3 = _mm_set_epi8(0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 2, 6, 10, 14, 0x80, 0x80, 0x80, 0x80);
+    const __m128i shuffle4 = _mm_set_epi8(0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 3, 7, 11, 15);
+    const __m128i* input_data = (const __m128i*)values_.data();
+    for (size_t i = 0; i < size; i += 64) {
+        size_t idx16b = i / 64UL;
+        __m128i input0 = _mm_loadu_si128(&input_data[idx16b]);
+        __m128i input0_1 = _mm_shuffle_epi8(input0, shuffle1);
+        __m128i input0_2 = _mm_shuffle_epi8(input0, shuffle2);
+        __m128i input0_3 = _mm_shuffle_epi8(input0, shuffle3);
+        __m128i input0_4 = _mm_shuffle_epi8(input0, shuffle4);
+        __m128i output0 = input0_1;
+        output0 = _mm_blendv_epi8(output0, input0_2, input0_2);
+        output0 = _mm_blendv_epi8(output0, input0_3, input0_3);
+        output0 = _mm_blendv_epi8(output0, input0_4, input0_4);
+
+        __m128i input1 = _mm_loadu_si128(&input_data[idx16b+1]);
+        __m128i input1_1 = _mm_shuffle_epi8(input1, shuffle1);
+        __m128i input1_2 = _mm_shuffle_epi8(input1, shuffle2);
+        __m128i input1_3 = _mm_shuffle_epi8(input1, shuffle3);
+        __m128i input1_4 = _mm_shuffle_epi8(input1, shuffle4);
+        __m128i output1 = input1_1;
+        output1 = _mm_blendv_epi8(output1, input1_2, input1_2);
+        output1 = _mm_blendv_epi8(output1, input1_3, input1_3);
+        output1 = _mm_blendv_epi8(output1, input1_4, input1_4);
+
+        __m128i input2 = _mm_loadu_si128(&input_data[idx16b+2]);
+        __m128i input2_1 = _mm_shuffle_epi8(input2, shuffle1);
+        __m128i input2_2 = _mm_shuffle_epi8(input2, shuffle2);
+        __m128i input2_3 = _mm_shuffle_epi8(input2, shuffle3);
+        __m128i input2_4 = _mm_shuffle_epi8(input2, shuffle4);
+        __m128i output2 = input2_1;
+        output2 = _mm_blendv_epi8(output2, input2_2, input2_2);
+        output2 = _mm_blendv_epi8(output2, input2_3, input2_3);
+        output2 = _mm_blendv_epi8(output2, input2_4, input2_4);
+
+
+        __m128i input3 = _mm_loadu_si128(&input_data[idx16b+3]);
+        __m128i input3_1 = _mm_shuffle_epi8(input3, shuffle1);
+        __m128i input3_2 = _mm_shuffle_epi8(input3, shuffle2);
+        __m128i input3_3 = _mm_shuffle_epi8(input3, shuffle3);
+        __m128i input3_4 = _mm_shuffle_epi8(input3, shuffle4);
+        __m128i output3 = input3_1;
+        output3 = _mm_blendv_epi8(output3, input3_2, input3_2);
+        output3 = _mm_blendv_epi8(output3, input3_3, input3_3);
+        output3 = _mm_blendv_epi8(output3, input3_4, input3_4);
+
+        _mm_storeu_si128(mutableBuffer + idx16b, output0);
+        _mm_storeu_si128(mutableBuffer + (numBytesPerStream/16UL) + idx16b, output1);
+        _mm_storeu_si128(mutableBuffer + (numBytesPerStream/16UL)*2UL + idx16b, output2);
+        _mm_storeu_si128(mutableBuffer + (numBytesPerStream/16UL)*3UL + idx16b, output3);
+
+        /*//__m128i output0 = _mm_shuffle_epi8();
         UnsignedType value;
         memcpy(&value, &values_[i], sizeof(T)); 
         for (size_t j = 0U; j < numStreams; ++j) {
             const uint8_t byteInValue = static_cast<uint8_t>((value >> (8U*j)) & 0xFFU);
             mutableBuffer[j * numBytesPerStream + i] = byteInValue;
-        }
+        }*/
     }
     values_.clear();
     return std::move(buffer);
