@@ -38,6 +38,8 @@
 #include "parquet/schema.h"
 #include "parquet/types.h"
 
+#include <smmintrin.h>
+
 using arrow::Status;
 using arrow::internal::checked_cast;
 
@@ -636,21 +638,95 @@ class FPByteStreamSplitEncoder : public EncoderImpl, virtual public TypedEncoder
   int64_t EstimatedDataEncodedSize() override {
     return static_cast<int64_t>(values_.size() * sizeof(T));
   }
+
   std::shared_ptr<Buffer> FlushValues() override {
-    constexpr size_t numStreams = sizeof(T);
-    using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
     std::shared_ptr<ResizableBuffer> buffer =
         AllocateBuffer(this->memory_pool(), EstimatedDataEncodedSize());
-    const size_t numBytesPerStream = values_.size();
-    uint8_t *mutableBuffer = buffer->mutable_data();
-    for (size_t i = 0; i < values_.size(); ++i) {
-        UnsignedType value;
-        memcpy(&value, &values_[i], sizeof(T)); 
-        for (size_t j = 0U; j < numStreams; ++j) {
-            const uint8_t byteInValue = static_cast<uint8_t>((value >> (8U*j)) & 0xFFU);
-            mutableBuffer[j * numBytesPerStream + i] = byteInValue;
+    const size_t num_elements = values_.size();
+    uint8_t *output_data = (uint8_t*)buffer->mutable_data();
+    size_t size = num_elements * sizeof(T);
+    const __m128i* input_data_simd = (const __m128i*)values_.data();
+    const uint8_t *input_data_u8 = (const uint8_t*)values_.data();
+
+    const __m128i mask_16_bits = _mm_set_epi32(0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU);
+    const __m128i mask_8_bits = _mm_set_epi16(0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU);
+
+    const size_t block_size = sizeof(__m128i) * sizeof(T);
+    const size_t num_blocks = size / block_size;
+
+    // Handle suffix first to catch potential out-of-bounds overwrites in the simd implementation.
+    const size_t offset_element = (num_blocks * block_size) / sizeof(T);
+    for (size_t i = offset_element; i < num_elements; ++i) {
+        for (size_t j = 0; j < sizeof(T); ++j) {
+            output_data[j * num_elements + i] = input_data_u8[j + i * sizeof(T)];
         }
     }
+
+    for (size_t k = 0; k < num_blocks; ++k) {
+        size_t idx16b = k * sizeof(T);
+        __m128i v[sizeof(T)];
+        __m128i source[4U];
+
+        if (std::is_same<float, T>::value) {
+            // Handle single-precision data.
+            for (size_t i = 0; i < sizeof(T); ++i) {
+                source[i] = _mm_loadu_si128(&input_data_simd[idx16b+i]);
+            }
+        } else {
+            // Handle double-precision data.
+            for (size_t i = 0; i < sizeof(T); ++i) {
+                v[i] = _mm_loadu_si128(&input_data_simd[idx16b+i]);
+            }
+        }
+
+        for (size_t it = 0; it < sizeof(T) / sizeof(float); ++it) {
+            if (std::is_same<double, T>::value) {
+                for (size_t j = 0; j < 4; ++j) {
+                    __m128i first, second;
+                    if (it == 0) {
+                        const uint8_t push_mask = _MM_SHUFFLE(3,1,2,0);
+                        first = _mm_shuffle_epi32(v[j*2], push_mask);
+                        second = _mm_shuffle_epi32(v[j*2+1], push_mask);
+                    } else {
+                        const uint8_t push_mask = _MM_SHUFFLE(2,0,3,1);
+                        first = _mm_shuffle_epi32(v[j*2], push_mask);
+                        second = _mm_shuffle_epi32(v[j*2+1], push_mask);
+                    }
+                    source[j] = _mm_unpacklo_epi64(first, second);
+                }
+            }
+
+            // Handle first 2 bytes
+            __m128i packed_blocks[4];
+            for (size_t j = 0; j < 2; ++j) {
+                __m128i v_low_16[4];
+                for (size_t i = 0; i < 4; ++i) {
+                    v_low_16[i]  = _mm_and_si128(source[i], mask_16_bits);
+                }
+                __m128i v_low_16_packed_low8[2];
+                __m128i v_low_16_packed_high8[2];
+                for (size_t i = 0; i < 2; ++i) {
+                    __m128i v_low_16_packed = _mm_packus_epi32(v_low_16[i*2], v_low_16[i*2+1]);
+                    v_low_16_packed_low8[i] = _mm_and_si128(v_low_16_packed, mask_8_bits);
+
+                    v_low_16_packed = _mm_srli_epi16(v_low_16_packed, 8U);
+                    v_low_16_packed_high8[i] = _mm_and_si128(v_low_16_packed, mask_8_bits);
+                }
+                packed_blocks[j*2] = _mm_packus_epi16(v_low_16_packed_low8[0], v_low_16_packed_low8[1]);
+                packed_blocks[j*2+1] = _mm_packus_epi16(v_low_16_packed_high8[0], v_low_16_packed_high8[1]);
+
+                for (size_t i = 0; i < 4; ++i) {
+                    source[i] = _mm_srli_epi32(source[i], 16U);
+                }
+            }
+
+            for (size_t j = 0; j < 4; ++j) {
+                uint8_t *out_addr = output_data + num_elements * (j + it * 4) + idx16b*(16U/sizeof(T));
+                _mm_storeu_si128((__m128i*)out_addr, packed_blocks[j]);
+            }
+        }
+    }
+
     values_.clear();
     return std::move(buffer);
   }
@@ -2201,12 +2277,48 @@ void FPByteStreamSplitDecoder<DType>::SetData(int num_values, const uint8_t* dat
   numValuesDecoded_ = 0;
 }
 
-template<typename DType>
-int FPByteStreamSplitDecoder<DType>::Decode(T* buffer, int max_values) {
-  constexpr size_t numStreams = sizeof(T);
-  using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
-  const int valuesToDecode = std::min(num_values_ - numValuesDecoded_, max_values);
-  for (int i = 0; i < valuesToDecode; ++i) {
+template<>
+int FPByteStreamSplitDecoder<FloatType>::Decode(T* buffer, int max_values) {
+  const int num_elements = std::min(num_values_ - numValuesDecoded_, max_values);
+  size_t size = num_elements * sizeof(float);
+  const size_t block_size = sizeof(__m128i) * 4U;
+  const size_t num_blocks = size / block_size;
+  uint8_t *output_data = (uint8_t*)buffer;
+  const uint8_t *input_data = (const uint8_t*)&data_[numValuesDecoded_];
+
+  // Handle suffix first.
+  const size_t num_processed_elements = (num_blocks * block_size) / sizeof(float);
+  for (size_t i = num_processed_elements; i < num_elements; ++i) {
+    for (size_t j = 0; j < sizeof(float); ++j) {
+      const uint8_t value = input_data[num_elements * j + i];
+      output_data[i * sizeof(float) + j] = value;
+    }
+  }
+
+    for (size_t i = 0; i < num_blocks; ++i) {
+        __m128i v[4];
+        for (size_t j = 0; j < 4; ++j) {
+            v[j] = _mm_loadu_si128((const __m128i*)&input_data[i * 16 + j * num_elements]);
+        }
+        __m128i comb[4];
+        comb[0] = _mm_unpacklo_epi8(v[0], v[2]);
+        comb[1] = _mm_unpacklo_epi8(v[1], v[3]);
+        comb[2] = _mm_unpackhi_epi8(v[0], v[2]);
+        comb[3] = _mm_unpackhi_epi8(v[1], v[3]);
+
+        __m128i comb2[4];
+        comb2[0] = _mm_unpacklo_epi8(comb[0], comb[1]);
+        comb2[1] = _mm_unpackhi_epi8(comb[0], comb[1]);
+        comb2[2] = _mm_unpacklo_epi8(comb[2], comb[3]);
+        comb2[3] = _mm_unpackhi_epi8(comb[2], comb[3]);
+
+        for (size_t j = 0; j < 4; ++j) {
+            _mm_storeu_si128((__m128i*)(&output_data[(i * 4 + j) * 16]), comb2[j]);
+        }
+    }
+
+
+  /*for (int i = 0; i < valuesToDecode; ++i) {
     UnsignedType reconstructedValueAsUint { 0U };
     for (size_t b = 0; b < numStreams; ++b) {
       const size_t byteIndex = b * streamSizeInBytes_ + numValuesDecoded_ + i;
@@ -2216,9 +2328,75 @@ int FPByteStreamSplitDecoder<DType>::Decode(T* buffer, int max_values) {
     T reconstructedValueAsFP;
     memcpy(&reconstructedValueAsFP, &reconstructedValueAsUint, sizeof(T));
     buffer[i] = reconstructedValueAsFP;
-  }
-  numValuesDecoded_ += valuesToDecode;
-  return valuesToDecode;
+  }*/
+
+  numValuesDecoded_ += num_elements;
+  return num_elements;
+}
+
+template<>
+int FPByteStreamSplitDecoder<DoubleType>::Decode(T* buffer, int max_values) {
+  const int num_elements = std::min(num_values_ - numValuesDecoded_, max_values);
+  uint8_t *output_data = (uint8_t*)buffer;
+  const uint8_t *input_data = (const uint8_t*)&data_[numValuesDecoded_];
+
+  size_t size = num_elements * sizeof(double);
+    const size_t block_size = sizeof(__m128i) * sizeof(double);
+    const size_t num_blocks = size / block_size;
+
+    // Handle suffix first.
+    const size_t num_processed_elements = (num_blocks * block_size) / sizeof(float);
+    for (size_t i = num_processed_elements; i < num_elements; ++i) {
+        for (size_t j = 0; j < sizeof(float); ++j) {
+            const uint8_t value = input_data[num_elements * j + i];
+            output_data[i * sizeof(float) + j] = value;
+        }
+    }
+
+    for (size_t i = 0; i < num_blocks; ++i) {
+        __m128i v[8];
+        for (size_t j = 0; j < 8; ++j) {
+            v[j] = _mm_loadu_si128((const __m128i*)&input_data[i * 16 + j * num_elements]);
+        }
+        __m128i comb[8];
+        for (size_t j = 0; j < 4; ++j) {
+            comb[j] = _mm_unpacklo_epi8(v[j], v[j+4]);
+            comb[j+4] = _mm_unpackhi_epi8(v[j], v[j+4]);
+        }
+
+        __m128i comb2[8];
+        for (size_t j = 0; j < 2; ++j) {
+            comb2[j] = _mm_unpacklo_epi8(comb[j], comb[j+2]);
+            comb2[j+2] = _mm_unpackhi_epi8(comb[j], comb[j+2]);
+            comb2[j+4] = _mm_unpacklo_epi8(comb[j+4], comb[j+2+4]);
+            comb2[j+6] = _mm_unpackhi_epi8(comb[j+4], comb[j+2+4]);
+        }
+
+        __m128i comb3[8];
+        for (size_t j = 0; j < 4; ++j) {
+            comb3[j*2] = _mm_unpacklo_epi8(comb2[j*2], comb2[j*2+1]);
+            comb3[j*2+1] = _mm_unpackhi_epi8(comb2[j*2], comb2[j*2+1]);
+        }
+
+        for (size_t j = 0; j < 8; ++j) {
+            _mm_storeu_si128((__m128i*)(&output_data[(i * 8 + j) * 16]), comb3[j]);
+        }
+    }
+
+  /*for (int i = 0; i < valuesToDecode; ++i) {
+    UnsignedType reconstructedValueAsUint { 0U };
+    for (size_t b = 0; b < numStreams; ++b) {
+      const size_t byteIndex = b * streamSizeInBytes_ + numValuesDecoded_ + i;
+      const UnsignedType byteValue = static_cast<UnsignedType>(data_[byteIndex]);
+      reconstructedValueAsUint |= (byteValue << (8U * b));
+    }
+    T reconstructedValueAsFP;
+    memcpy(&reconstructedValueAsFP, &reconstructedValueAsUint, sizeof(T));
+    buffer[i] = reconstructedValueAsFP;
+  }*/
+
+  numValuesDecoded_ += num_elements;
+  return num_elements;
 }
 
 // ----------------------------------------------------------------------
