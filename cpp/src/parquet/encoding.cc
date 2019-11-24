@@ -641,18 +641,14 @@ class FPByteStreamSplitEncoder : public EncoderImpl, virtual public TypedEncoder
     using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
     std::shared_ptr<ResizableBuffer> buffer =
         AllocateBuffer(this->memory_pool(), EstimatedDataEncodedSize());
-    size_t streamOffsets[numStreams] = { 0U };
     const size_t numBytesPerStream = values_.size();
-    for (size_t i = 0U; i < numStreams; ++i) {
-        streamOffsets[i] = i * numBytesPerStream;
-    }
     uint8_t *mutableBuffer = buffer->mutable_data();
     for (size_t i = 0; i < values_.size(); ++i) {
-        const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
+        UnsignedType value;
+        memcpy(&value, &values_[i], sizeof(T)); 
         for (size_t j = 0U; j < numStreams; ++j) {
-        const uint8_t byteInValue = static_cast<uint8_t>((value >> (8U*j)) & 0xFFU);
-        mutableBuffer[streamOffsets[j]] = byteInValue;
-        ++streamOffsets[j];
+            const uint8_t byteInValue = static_cast<uint8_t>((value >> (8U*j)) & 0xFFU);
+            mutableBuffer[j * numBytesPerStream + i] = byteInValue;
         }
     }
     values_.clear();
@@ -660,9 +656,11 @@ class FPByteStreamSplitEncoder : public EncoderImpl, virtual public TypedEncoder
   }
 
   void Put(const T* buffer, int num_values) override {
-    values_.reserve(values_.size() + num_values);
-    for (int i = 0; i < num_values; ++i) {
-        values_.push_back(buffer[i]);
+    size_t sz = values_.size();
+    size_t num_values_sz = (size_t)num_values;
+    values_.resize(sz + num_values_sz);
+    for (size_t i = 0; i < num_values_sz; ++i) {
+        values_[sz + i] = buffer[i];
     }
   }
   void Put(const ::arrow::Array& values) override {
@@ -695,20 +693,16 @@ class FPByteStreamSplitXOREncoder : public EncoderImpl, virtual public TypedEnco
     using UnsignedType = typename UnsignedTypeWithWidth<sizeof(T)>::type;
     std::shared_ptr<ResizableBuffer> buffer =
         AllocateBuffer(this->memory_pool(), EstimatedDataEncodedSize());
-    size_t streamOffsets[numStreams] = { 0U };
     const size_t numBytesPerStream = values_.size();
-    for (size_t i = 0U; i < numStreams; ++i) {
-        streamOffsets[i] = i * numBytesPerStream;
-    }
     uint8_t *mutableBuffer = buffer->mutable_data();
     UnsignedType prevValue = 0x0;
     for (size_t i = 0; i < values_.size(); ++i) {
-        const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
+        UnsignedType value;
+        memcpy(&value, &values_[i], sizeof(T));
         const UnsignedType valueXor = value ^ prevValue;
         for (size_t j = 0U; j < numStreams; ++j) {
             const uint8_t byteInValue = static_cast<uint8_t>((valueXor >> (8U*j)) & 0xFFU);
-            mutableBuffer[streamOffsets[j]] = byteInValue;
-            ++streamOffsets[j];
+            mutableBuffer[j * numBytesPerStream + i] = byteInValue;
         }
         prevValue = value;
     }
@@ -717,9 +711,11 @@ class FPByteStreamSplitXOREncoder : public EncoderImpl, virtual public TypedEnco
   }
 
   void Put(const T* buffer, int num_values) override {
-    values_.reserve(values_.size() + num_values);
-    for (int i = 0; i < num_values; ++i) {
-        values_.push_back(buffer[i]);
+    size_t sz = values_.size();
+    size_t num_values_sz = (size_t)num_values;
+    values_.resize(sz + num_values_sz);
+    for (size_t i = 0; i < num_values_sz; ++i) {
+        values_[sz + i] = buffer[i];
     }
   }
   void Put(const ::arrow::Array& values) override {
@@ -763,7 +759,8 @@ class FPByteStreamSplitComponentEncoder<FloatType> : public EncoderImpl, virtual
     BitUtil::BitWriter bitWriter(mutableBuffer, numBytesForBitStream);
     const size_t numValues = values_.size();
     for (size_t i = 0; i < numValues; ++i) {
-        const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
+        UnsignedType value;
+        memcpy(&value, &values_[i], sizeof(T));
         const uint8_t sign = (value>>31) & 0x1U;
         const bool res = bitWriter.PutValue(sign, 1);
         if (!res) {
@@ -782,9 +779,11 @@ class FPByteStreamSplitComponentEncoder<FloatType> : public EncoderImpl, virtual
   }
 
   void Put(const T* buffer, int num_values) override {
-    values_.reserve(values_.size() + num_values);
-    for (int i = 0; i < num_values; ++i) {
-        values_.push_back(buffer[i]);
+    size_t sz = values_.size();
+    size_t num_values_sz = (size_t)num_values;
+    values_.resize(sz + num_values_sz);
+    for (size_t i = 0; i < num_values_sz; ++i) {
+        values_[sz + i] = buffer[i];
     }
   }
   void Put(const ::arrow::Array& values) override {
@@ -830,7 +829,8 @@ class FPByteStreamSplitComponentEncoder<DoubleType> : public EncoderImpl, virtua
     BitUtil::BitWriter bitWriter(mutableBuffer, numBytesForBitStream);
     const size_t numValues = values_.size();
     for (size_t i = 0; i < numValues; ++i) {
-        const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
+        UnsignedType value;
+        memcpy(&value, &values_[i], sizeof(T));
         const uint8_t sign = (value>>63) & 0x1U;
         const bool res = bitWriter.PutValue(sign, 1);
         if (!res) {
@@ -855,9 +855,11 @@ class FPByteStreamSplitComponentEncoder<DoubleType> : public EncoderImpl, virtua
   }
 
   void Put(const T* buffer, int num_values) override {
-    values_.reserve(values_.size() + num_values);
-    for (int i = 0; i < num_values; ++i) {
-        values_.push_back(buffer[i]);
+    size_t sz = values_.size();
+    size_t num_values_sz = (size_t)num_values;
+    values_.resize(sz + num_values_sz);
+    for (size_t i = 0; i < num_values_sz; ++i) {
+        values_[sz + i] = buffer[i];
     }
   }
   void Put(const ::arrow::Array& values) override {
@@ -933,7 +935,8 @@ std::shared_ptr<Buffer> FPByteStreamSplitEncoderRLEByte<DType>::FlushValues() {
   const size_t numRLEStreams = 2U;
   for (size_t j = numStreams - numRLEStreams; j < numStreams; ++j) {
     for (size_t i = 0; i < values_.size(); ++i) {
-      const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
+      UnsignedType value;
+      memcpy(&value, &values_[i], sizeof(T));
       const uint8_t byteInValue = static_cast<uint8_t>((value >> (8U*j)) & 0xFFU);
       encoder.Put(byteInValue);
     }
@@ -943,7 +946,8 @@ std::shared_ptr<Buffer> FPByteStreamSplitEncoderRLEByte<DType>::FlushValues() {
   size_t streamOffset = rleDataSize;
   for (size_t j = 0; j < numStreams-numRLEStreams; ++j) {
     for (size_t i = 0; i < values_.size(); ++i) {
-      const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i]);
+      UnsignedType value;
+      memcpy(&value, &values_[i], sizeof(T));
       const uint8_t byteInValue = static_cast<uint8_t>((value >> (8U*j)) & 0xFFU);
       mutableBuffer[streamOffset++] = byteInValue;
     }
@@ -960,10 +964,12 @@ void FPByteStreamSplitEncoderRLEByte<DType>::Put(const ::arrow::Array& values) {
 
 template<typename DType>
 void FPByteStreamSplitEncoderRLEByte<DType>::Put(const T* buffer, int num_values) {
-  values_.reserve(values_.size() + num_values);
-  for (int i = 0; i < num_values; ++i) {
-    values_.push_back(buffer[i]);
-  }
+  size_t sz = values_.size();
+    size_t num_values_sz = (size_t)num_values;
+    values_.resize(sz + num_values_sz);
+    for (size_t i = 0; i < num_values_sz; ++i) {
+        values_[sz + i] = buffer[i];
+    }
 }
 
 template<typename DType>
@@ -1013,7 +1019,8 @@ class FPByteStreamSplitComponentRLEEncoder : public EncoderImpl, virtual public 
         uint8_t maxValue = 0U;
         uint8_t minValue = 0xFFU;
         for (size_t j = 0; j < blockSize && i + j < numValues; ++j) {
-            const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[i + j]);
+            UnsignedType value;
+            memcpy(&value, &values_[i+j], sizeof(T));
             const uint8_t exponentValue = (value >> 23) & 0xFFU;
             if (maxValue < exponentValue) {
                 maxValue = exponentValue;
@@ -1038,7 +1045,8 @@ class FPByteStreamSplitComponentRLEEncoder : public EncoderImpl, virtual public 
         exponentRangeValueRaw[i/blockSize] = numBitsForExponent;
         for (size_t j = 0; j < blockSize && i + j < numValues; ++j) {
             const size_t index = i + j;
-            const UnsignedType value = *reinterpret_cast<const UnsignedType*>(&values_[index]);
+            UnsignedType value;
+            memcpy(&value, &values_[index], sizeof(T));
             const uint8_t sign = (value >> 31) & 0x1U;
             const uint8_t exponent = ((value >> 23) & 0xFFU) - minValue;
             const uint8_t mantissa0 = (value >> 15) & 0xFFU;
@@ -1072,9 +1080,11 @@ class FPByteStreamSplitComponentRLEEncoder : public EncoderImpl, virtual public 
   }
 
   void Put(const T* buffer, int num_values) override {
-    values_.reserve(values_.size() + num_values);
-    for (int i = 0; i < num_values; ++i) {
-        values_.push_back(buffer[i]);
+    size_t sz = values_.size();
+    size_t num_values_sz = (size_t)num_values;
+    values_.resize(sz + num_values_sz);
+    for (size_t i = 0; i < num_values_sz; ++i) {
+        values_[sz + i] = buffer[i];
     }
   }
   void Put(const ::arrow::Array& values) override {
@@ -2203,7 +2213,8 @@ int FPByteStreamSplitDecoder<DType>::Decode(T* buffer, int max_values) {
       const UnsignedType byteValue = static_cast<UnsignedType>(data_[byteIndex]);
       reconstructedValueAsUint |= (byteValue << (8U * b));
     }
-    const T reconstructedValueAsFP = *reinterpret_cast<const T*>(&reconstructedValueAsUint);
+    T reconstructedValueAsFP;
+    memcpy(&reconstructedValueAsFP, &reconstructedValueAsUint, sizeof(T));
     buffer[i] = reconstructedValueAsFP;
   }
   numValuesDecoded_ += valuesToDecode;
